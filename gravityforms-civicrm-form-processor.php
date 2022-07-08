@@ -23,7 +23,9 @@ namespace BlackBrickSoftware\GravityFormsCiviCRMFormProcessor;
 
 require_once __DIR__ . '/libs/autoload.php';
 
+use GFLogging;
 use Illuminate\Support\Arr;
+use KLogger;
 
 /**
  * Add a setting to specify if JSON request body fields should be structured
