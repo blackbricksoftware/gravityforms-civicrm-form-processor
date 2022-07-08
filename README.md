@@ -4,9 +4,11 @@ Send remote requests to to [CiviCRM](https://civicrm.org/) with [Gravity Forms](
 
 ## What does this extension do?
 
+TL;DR; This extension makes it easier to send data from a Gravity Form to a remote CiviCRM installation.
+
 The CiviCRM REST REST API consumed data via encoded JSON a HTTP form post. In [APIv3](https://docs.civicrm.org/dev/en/latest/api/v3/rest/), this variable is `json`, in [APIv4](https://docs.civicrm.org/dev/en/latest/api/v4/rest/) this variable is `params`. Out of the box, the Gravity Forms Webhooks extension does not support structured JSON or combining data encodings like this (i.e. a Request Format of FORM containing encoded JSON).
 
-## TL;DR; How do I this up and running?
+## How do I get this up and running?
 
 1. (Recommended) Install and configure the [AuthX](https://docs.civicrm.org/dev/en/latest/framework/authx/) extension that comes with CiviCRM. This gives many options for authentication mechanisms.
    1. Configure authentication rules and mechanisms (Administer -> Administration Console -> Authentication). The defaults are probably okay.
