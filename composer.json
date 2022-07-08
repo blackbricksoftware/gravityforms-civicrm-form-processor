@@ -1,0 +1,21 @@
+{
+    "name": "blackbricksoftware/gravityforms-civicrm-form-processor",
+    "type": "wordpress-plugin",
+    "autoload": {
+        "psr-4": {
+            "BlackBrickSoftware\\GravityFormsCiviCRMFormProcessor\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "David Hayes",
+            "email": "david@blackbricksoftware.com"
+        }
+    ],
+    "require": {
+        "illuminate/support": "^8.83"
+    },
+    "config": { 
+        "vendor-dir": "libs/" 
+    } 
+}
