@@ -19,85 +19,24 @@
  * GNU General Public License for more details.
  */
 
-namespace BlackBrickSoftware\GravityFormsCiviCRMFormProcessor;
+defined('ABSPATH') || die();
 
 require_once __DIR__ . '/libs/autoload.php';
 
-use GFLogging;
-use Illuminate\Support\Arr;
-use KLogger;
+use BlackBrickSoftware\GravityFormsCiviCRMFormProcessor\Webhooks;
+use BlackBrickSoftware\GravityFormsCiviCRMFormProcessor\Tooltips;
 
-/**
- * Add a setting to specify if JSON request body fields should be structured
- * https://docs.gravityforms.com/gform_addon_feed_settings_fields/
- */
-function body_fields_settings( $feed_settings_fields, $addon ) {
-	$feed_settings_fields = $addon->add_field_after( 'requestFormat', array(
-		[
-			'name'          => 'CiviCRMAPIBodyFields',
-			'type'          => 'toggle',
-			'label'         => esc_html__( 'CiviCRM API Format', 'gravityforms-civicrm-form-processor' ),
-			'default_value' => false,
-			'dependency'    => [
-				'live'   => true,
-				'fields' => [
-					[
-						'field'  => 'requestFormat',
-						'values' =>[ 'form' ],
-					],
-				],
-			],
-			'tooltip'        => sprintf(
-				'<h6>%s</h6>%s',
-				esc_html__( 'CiviCRM API Format', 'gravityforms-civicrm-form-processor' ),
-				esc_html__( 'When CiviCRM API Format is enabled, the Request Body fields starting with "json." (API v3) or "params." (API v4) will be translated to urlencoded json under their respective key.', 'gravityforms-civicrm-form-processor' )
-			),			
-		],
-	), $feed_settings_fields );
-	return $feed_settings_fields;
-}
-add_filter( 'gform_gravityformswebhooks_feed_settings_fields', 'BlackBrickSoftware\GravityFormsCiviCRMFormProcessor\body_fields_settings', 10, 2 );
+$tooltips = new Tooltips;
+$webhooks = new Webhooks;
 
-/**
- * If Structured body fields is enabled, array undot their keys
- * https://docs.gravityforms.com/gform_webhooks_request_data/
- */
-function maybe_undot_request_keys( $request_data, $feed ) {
+// More available tool tips
+add_filter( 'gform_tooltips', [ $tooltips, 'add_gfform_tooltips' ], 10, 2);
 
+// Add settings
+add_filter( 'gform_gravityformswebhooks_feed_settings_fields', [ $webhooks, 'body_fields_settings' ], 10, 2 );
 
-	// Nothing?
-	GFLogging::log_message( 'gravityformswebhooks', 'CiviCRM Form Processor (Original Request Data):' . print_r($request_data, true), KLogger::DEBUG );
-	if (empty($request_data)) {
-		return $request_data;
-	}
+// Modify outgoing webhook format
+add_filter( 'gform_webhooks_request_data', [ $webhooks, 'maybe_undot_request_keys' ], 10, 2 );
 
-	// Not sending Form data
-	if (rgars( $feed, 'meta/requestFormat' ) !== 'form') {
-		return $request_data;
-	}
-
-	// docs seem to indicate these do not play nice
-	if (strpos( rgars( $feed, 'meta/requestURL' ), 'automate.io' ) !== false) {
-		return $request_data;
-	}
-
-	// setting not enabled
-	GFLogging::log_message( 'gravityformswebhooks', 'CiviCRM Form Processor (Enabled?):' .  rgars( $feed, 'meta/CiviCRMAPIBodyFields' ) , KLogger::DEBUG );
-	if (!rgars( $feed, 'meta/CiviCRMAPIBodyFields' )) {
-		return $request_data;
-	}
-
-	$undotted_request_data = Arr::undot($request_data);
-
-	foreach (['json', 'params'] as $prefix) {
-		if (array_key_exists($prefix, $undotted_request_data)) {
-			$request_data[$prefix] = json_encode($undotted_request_data[$prefix]);
-		}
-	}
-
-	GFLogging::log_message( 'gravityformswebhooks', 'CiviCRM Form Processor (Undotted Request Data):' . print_r( $undotted_request_data, true), KLogger::DEBUG );
-	GFLogging::log_message( 'gravityformswebhooks', 'CiviCRM Form Processor (New Request Data):' . print_r( $request_data, true), KLogger::DEBUG );
-
-	return $request_data;
-}
-add_filter( 'gform_webhooks_request_data', 'BlackBrickSoftware\GravityFormsCiviCRMFormProcessor\maybe_undot_request_keys', 10, 2 );
+// (if enabled) Send a notification email of failed webhook
+add_action( 'gform_webhooks_post_request', [ $webhooks, 'failed_webhook_notification' ], 10, 4 );
