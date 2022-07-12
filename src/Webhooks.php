@@ -279,63 +279,12 @@ class Webhooks
             return;
         }
 
-        $to = rgars( $feed, 'meta/CiviCRMWebhookFailureNotificationTo' );
-        $fromName = rgars( $feed, 'meta/CiviCRMWebhookFailureNotificationFromName' );
-        $from = rgars( $feed, 'meta/CiviCRMWebhookFailureNotificationFrom' );
-        $bcc = rgars( $feed, 'meta/CiviCRMWebhookFailureNotificationBCC' );
-        $subject = rgars( $feed, 'meta/CiviCRMWebhookFailureNotificationSubject' );
-
-        // GFCommon::send_email(
-        //     $from,
-        //     $to,
-        //     $bcc,
-        //     $reply_to,
-        //     $subject,
-        //     $message,
-        //     $from_name = '',
-        //     $message_format = 'html',
-        //     $attachments = '',
-        //     $entry = false,
-        //     $notification = false,
-        //     $cc = null
-        // )
-
-        // $response
-        // 'headers' (string[]) Array of response headers keyed by their name.
-        // 'body' (string) Response body.
-        // 'response' (array) Data about the HTTP response.
-        // 'code' (int|false) HTTP response code.
-        // 'message' (string|false) HTTP response message.
-        // 'cookies' (WP_HTTP_Cookie[]) Array of response cookies.
-        // 'http_response' (WP_HTTP_Requests_Response|null) Raw HTTP response object.
-
-        GFLogging::log_message('gravityformswebhooks', "Post Webhook Settings: 
-            notification: $notification
-            to: $to
-            fromName: $fromName
-            from: $from
-            bcc: $bcc
-            subject: $subject
-        ", KLogger::DEBUG);
-
-        $entryListTable = new GF_Entry_List_Table([
-            'form' => $form,
-        ]);
-        $entryId = $entry['id'];
-        $entryUrl = $entryListTable->get_detail_url( $entry );
-
         /**
          * Some form DNS Error
          */
         if ( is_wp_error( $response ) ) {
-            $debugInfo = $this->get_notification_debug_information( $response, $feed, $entry, $form );
-            $message = <<<MSG
-            <p><strong>Network Error</strong></p>
-            <p>Sending data to CiviCRM failed with a possible network error. The data is still accessible at entry <a href="{$entryUrl}" target="_blank">#{$entryId}</a> and in notification emails.</p>
-            $debugInfo
-            MSG;
-            GFLogging::log_message('gravityformswebhooks', "Post Webhook: is_wp_error( \$response )\n$debugInfo");
-            GFCommon::send_email( $from, $to, $bcc, '', $subject, $message, $fromName, 'html', '', $entry );
+            $this->log_variables( 'Post Webhook Failed: is_wp_error( $response )', $response, $feed, $entry, $form );
+            $this->send_failed_webhook_email( 'Network Error', 'Sending data to CiviCRM failed with a possible network error.', $response, $feed, $entry, $form);
             return;
         }
 
@@ -343,14 +292,8 @@ class Webhooks
          * Some form of HTTP Error
          */
         if ( $response['response']['code'] !== 200 ) { // I think CiviCRM always returns 200 for success
-            $debugInfo = $this->get_notification_debug_information( $response, $feed, $entry, $form );
-            $message = <<<MSG
-            <p><strong>Invalid HTTP Status Code</strong></p>
-            <p>Sending data to CiviCRM failed with an invalid return code. The data is still accessible at entry <a href="{$entryUrl}" target="_blank">#{$entryId}</a> and in notification emails.</p>
-            $debugInfo
-            MSG;
-            GFLogging::log_message('gravityformswebhooks', "Post Webhook: \$response['response']['code'] !== 200\n$debugInfo");
-            GFCommon::send_email( $from, $to, $bcc, '', $subject, $message, $fromName, 'html', '', $entry );
+            $this->log_variables( 'Post Webhook Failed: $response[response][code] !== 200', $response, $feed, $entry, $form );
+            $this->send_failed_webhook_email( 'Invalid HTTP Status Code', 'Sending data to CiviCRM failed with an invalid return code.', $response, $feed, $entry, $form);
             return;
         }
 
@@ -360,14 +303,8 @@ class Webhooks
         try {
             $responseData = json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $e) {
-            $debugInfo = $this->get_notification_debug_information( $response, $feed, $entry, $form );
-            $message = <<<MSG
-            <p><strong>Response Was Not JSON</strong></p>
-            <p>Sending data to CiviCRM failed with a return payload that was not valid JSON. Verify the GET or POST parameters contain a 'json' key. The data is still accessible at entry <a href="{$entryUrl}" target="_blank">#{$entryId}</a> and in notification emails.</p>
-            $debugInfo
-            MSG;
-            GFLogging::log_message('gravityformswebhooks', "Post Webhook: \$response['body'] is not JSON \n$debugInfo");
-            GFCommon::send_email( $from, $to, $bcc, '', $subject, $message, $fromName, 'html', '', $entry );
+            $this->log_variables( 'Post Webhook: $response[body] is not JSON', $response, $feed, $entry, $form );
+            $this->send_failed_webhook_email( 'Response Was Not JSON', 'Sending data to CiviCRM failed with a return payload that was not valid JSON. Verify the GET or POST parameters contain a \'json\' key.', $response, $feed, $entry, $form);
             return;
         }
 
@@ -375,53 +312,112 @@ class Webhooks
          * CiviCRM API (v3 or v4) or Form Processor Error Error
          */
         if ( $responseData['is_error'] || array_key_exists('error_code', $responseData) ) {
-            $debugInfo = $this->get_notification_debug_information( $response, $feed, $entry, $form );
-            $responseDataDump = print_r($responseData, true);
-            $message = <<<MSG
-            <p><strong>CiviCRM API Returned an Error</strong></p>
-            <p>The CiviCRM API returned an error message. Verify all required field are submitted and contain valid data. The data is still accessible at entry <a href="{$entryUrl}" target="_blank">#{$entryId}</a> and in notification emails.</p>
-            === Response Data ===
-            <p><strong>\$responseData</strong></p>
-            <code>
-                {$responseDataDump}
-            </code>
-            === / Response Data ===
-            $debugInfo
-            MSG;
-            GFLogging::log_message('gravityformswebhooks', "Post Webhook: \$responseData['is_error'] || array_key_exists('error_code', \$responseData) \n$debugInfo");
-            GFCommon::send_email( $from, $to, $bcc, '', $subject, $message, $fromName, 'html', '', $entry );
+            $this->log_variables( 'Post Webhook Failed: $responseData[is_error] || array_key_exists(error_code, $responseData)', $response, $feed, $entry, $form, $responseData );
+            $this->send_failed_webhook_email( 'CiviCRM API Returned an Error', 'The CiviCRM API returned an error message. Verify all required field are submitted and contain valid data.', $response, $feed, $entry, $form, $responseData );
             return;
         }
 
-        // No Error Detected
+        // No Error Detected (probably)
     }
 
-    public function get_notification_debug_information( $response, $feed, $entry, $form ) {
-        
-        $responseDump = print_r($response, true);
-        $feedDump = print_r($feed, true);
-        $entryDump = print_r($entry, true);
-        $formDump = print_r($form, true);
+    public function log_variables ( $msg, ...$vars ) {
 
-        return <<<DEBUG
+        GFLogging::log_message( 'gravityformswebhooks', $msg );
+
+        foreach ($vars as $var) {
+            GFLogging::log_message( 'gravityformswebhooks', print_r($var, true) );
+        }
+    }
+
+    public function send_failed_webhook_email ( $header, $errorMsg, $response, $feed, $entry, $form, $responseData = null ) {
+
+        $entryListTable = new GF_Entry_List_Table([
+            'form' => $form,
+        ]);
+        $entryId = $entry['id'];
+        $entryUrl = $entryListTable->get_detail_url( $entry );
+
+        $toRaw = rgars( $feed, 'meta/CiviCRMWebhookFailureNotificationTo' );
+        $fromNameRaw = rgars( $feed, 'meta/CiviCRMWebhookFailureNotificationFromName' );
+        $fromRaw = rgars( $feed, 'meta/CiviCRMWebhookFailureNotificationFrom' );
+        $bccRaw = rgars( $feed, 'meta/CiviCRMWebhookFailureNotificationBCC' );
+        $subjectRaw = rgars( $feed, 'meta/CiviCRMWebhookFailureNotificationSubject' );
+
+        $to = GFCommon::replace_variables( $toRaw, $form, $entry, false, false, false, 'text' );
+        $fromName = GFCommon::replace_variables( $fromNameRaw, $form, $entry, false, false, false, 'text' );
+        $from = GFCommon::replace_variables( $fromRaw, $form, $entry, false, false, false, 'text' );
+        $bcc = GFCommon::replace_variables( $bccRaw, $form, $entry, false, false, false, 'text' );
+        $subject = GFCommon::replace_variables( $subjectRaw, $form, $entry, false, false, false, 'text' );
+        
+        $emailInfoBefore = <<<EMAIL
+        Post Webhook Failed
+        === Email Vars Before and After Replacement ===
+        To: $toRaw / $to
+        From Name: $fromNameRaw / $fromName
+        From: $fromRaw / $from
+        BCC: $bccRaw / $bcc
+        Subject: $subjectRaw / $subject
+        === / Email Vars Before and After Replacement ===\n\n
+        EMAIL;
+        GFLogging::log_message( 'gravityformswebhooks', $emailInfoBefore );
+
+        $debugInfo = $this->get_notification_debug_html( $response, $feed, $entry, $form, $responseData );
+        $message = <<<MSG
+        <p><strong>{$header}</strong></p>
+        <p>{$errorMsg}</p>
+        <p>The data is still accessible at entry <a href="{$entryUrl}" target="_blank">#{$entryId}</a> and in notification emails.</p>
+        $debugInfo
+        MSG;
+
+        GFCommon::send_email( $from, $to, $bcc, '', $subject, $message, $fromName, 'html', '', $entry );
+    }
+
+    
+    public function get_notification_debug_html( $response, $feed, $entry, $form, $responseData = null ) {
+        
+        $responseDump = $this->dump_and_encode( $response );
+        $feedDump = $this->dump_and_encode( $feed );
+        $entryDump = $this->dump_and_encode( $entry );
+        $formDump = $this->dump_and_encode( $form );
+
+        $debugInfo = <<<DEBUG
         === Debug Information ===
         <p><strong>\$response</strong></p>
-        <code>
+        <code style="white-space: pre-wrap;">
             {$responseDump}
         </code>
         <p><strong>\$feed</strong></p>
-        <code>
+        <code style="white-space: pre-wrap;">
             {$feedDump}
         </code>
         <p><strong>\$entry</strong></p>
-        <code>
+        <code style="white-space: pre-wrap;">
             {$entryDump}
         </code>
         <p><strong>\$form</strong></p>
-        <code>
+        <code style="white-space: pre-wrap;">
             {$formDump}
         </code>
-        === / Debug Information ===
+        === / Debug Information ===\n\n
         DEBUG;
+
+        if ( $responseData !== null ) {
+            $responseDataDump = $this->dump_and_encode( $responseData );
+            $debugInfo .= <<<DEBUG
+            === Response Data ===
+            <p><strong>\$responseData</strong></p>
+            <code style="white-space: pre-wrap;">
+                {$responseDataDump}
+            </code>
+            === / Response Data ===\n\n
+            DEBUG;
+        }
+
+        return $debugInfo;
+    }
+
+    public function dump_and_encode($rawText)
+    {
+        return htmlspecialchars( print_r( $rawText, true ) );
     }
 }
