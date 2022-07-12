@@ -5,7 +5,7 @@
  * Description: Add functionality to make Gravity Forms to CiviCRM integrations easier.
  * Author: Black Brick Software LLC
  * Author URI: https://blackbricksoftware.com
- * Version: 1.0.0
+ * Version: v1.0.0-beta1
  * Text Domain: gravityforms-civicrm-form-processor
  *
  * Gravity Forms CiviCRM Form Processor is free software: you can redistribute it and/or modify
