@@ -403,7 +403,7 @@ class Webhooks
 
         if ( $responseData !== null ) {
             $responseDataDump = $this->dump_and_encode( $responseData );
-            $debugInfo .= <<<DEBUG
+            $responseInfo = <<<DEBUG
             === Response Data ===
             <p><strong>\$responseData</strong></p>
             <code style="white-space: pre-wrap;">
@@ -411,6 +411,7 @@ class Webhooks
             </code>
             === / Response Data ===\n\n
             DEBUG;
+            $debugInfo = $responseInfo . $debugInfo;
         }
 
         return $debugInfo;
