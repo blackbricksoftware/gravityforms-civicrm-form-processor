@@ -372,14 +372,14 @@ class Webhooks
         }
 
         /**
-         * CiviCRM API (v3 or v4) Error
+         * CiviCRM API (v3 or v4) or Form Processor Error Error
          */
         if ( $responseData['is_error'] || array_key_exists('error_code', $responseData) ) {
             $debugInfo = $this->get_notification_debug_information( $response, $feed, $entry, $form );
             $responseDataDump = print_r($responseData, true);
             $message = <<<MSG
             <p><strong>CiviCRM API Returned an Error</strong></p>
-            <p>The CiviCRM API returned an error message. Verify all required field are submitted and contain valid information. The data is still accessible at entry <a href="{$entryUrl}" target="_blank">#{$entryId}</a> and in notification emails.</p>
+            <p>The CiviCRM API returned an error message. Verify all required field are submitted and contain valid data. The data is still accessible at entry <a href="{$entryUrl}" target="_blank">#{$entryId}</a> and in notification emails.</p>
             === Response Data ===
             <p><strong>\$responseData</strong></p>
             <code>
@@ -392,11 +392,6 @@ class Webhooks
             GFCommon::send_email( $from, $to, $bcc, '', $subject, $message, $fromName, 'html', '', $entry );
             return;
         }
-
-        /**
-         * CiviCRM Form Processor Error
-         */
-        // {"input":{"first_name":"first","last_name":"last"},"action":[{"action":"Create Guest Contact","output":{"contact_id":56831}}]}
 
         // No Error Detected
     }
