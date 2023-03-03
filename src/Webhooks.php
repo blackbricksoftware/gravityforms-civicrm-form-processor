@@ -220,8 +220,11 @@ class Webhooks
      * If Structured body fields is enabled, array undot their keys
      * https://docs.gravityforms.com/gform_webhooks_request_data/
      */
-    public function maybe_undot_request_keys($request_data, $feed)
+    public function maybe_undot_request_keys($request_data, $feed, $entry, $form)
     {
+
+        // Log structure of form being submitted
+        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Form Structure):' . print_r($form, true), KLogger::DEBUG);
 
         // Nothing?
         GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Original Request Data):' . print_r($request_data, true), KLogger::DEBUG);
