@@ -224,11 +224,11 @@ class Webhooks
     {
 
         // Log all incoming data
-        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Request Data):' . print_r($request_data, true), KLogger::DEBUG);
-        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Feed):' . print_r($feed, true), KLogger::DEBUG);
-        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Entry):' . print_r($entry, true), KLogger::DEBUG);
-        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Form):' . print_r($form, true), KLogger::DEBUG);
-        GFLogging::log_message('gravityformswebhooks', 'Seperator:' . print_r('------------------------------------------------------------', true), KLogger::DEBUG);
+        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Request Data): ' . print_r($request_data, true), KLogger::DEBUG);
+        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Feed): ' . print_r($feed, true), KLogger::DEBUG);
+        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Entry): ' . print_r($entry, true), KLogger::DEBUG);
+        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Form): ' . print_r($form, true), KLogger::DEBUG);
+        GFLogging::log_message('gravityformswebhooks', 'Seperator: ' . print_r('------------------------------------------------------------', true), KLogger::DEBUG);
 
         // Nothing?
         GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Original Request Data):' . print_r($request_data, true), KLogger::DEBUG);
@@ -251,6 +251,12 @@ class Webhooks
         if (!rgars($feed, 'meta/CiviCRMAPIBodyFields')) {
             return $request_data;
         }
+
+        //find checkbox fields (support multivalues)
+        $multiselects = array_filter($form['fields'], function($v, $k) {
+            return $v->type = 'checkbox';
+        }, ARRAY_FILTER_USE_BOTH);
+        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Multiselects): ' . print_r($multiselects, true), KLogger::DEBUG);
 
         $undotted_request_data = Arr::undot($request_data);
 
