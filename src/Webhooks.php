@@ -252,11 +252,20 @@ class Webhooks
             return $request_data;
         }
 
-        //find checkbox fields (support multivalues)
-        $multiselects = array_filter($form['fields'], function($v, $k) {
-            return $v->type == 'checkbox';
-        }, ARRAY_FILTER_USE_BOTH);
-        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Multiselects): ' . print_r($multiselects, true), KLogger::DEBUG);
+        $multivalues = [];
+        foreach($form['fields'] as $field) {
+            if ($field->type == 'checkbox') {
+                $multivalues[$field->id] = '';
+            }
+        }
+
+        foreach($feed['fieldValues'] as $fv) {
+            if (array_key_exists($fv['value'], $multivalues)) {
+                $multivalues[$fv['value']] = $fv['custom_key'];
+            }
+        }
+
+        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Multivalues): ' . print_r($multivalues, true), KLogger::DEBUG);
 
         $undotted_request_data = Arr::undot($request_data);
 
@@ -264,6 +273,9 @@ class Webhooks
             // Remove the dotted params
             foreach ($request_data as $data_name => $data_value) {
                 if (strpos($data_name, "$prefix.") === 0) {
+                    if (in_array($data_name, $multivalues)) {
+                        $data_value = explode(', ', $data_value);
+                    }
                     unset($request_data[$data_name]);
                 }
             }
