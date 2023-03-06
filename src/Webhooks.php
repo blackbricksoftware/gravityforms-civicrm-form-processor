@@ -267,15 +267,18 @@ class Webhooks
 
         GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Multivalues): ' . print_r($multivalues, true), KLogger::DEBUG);
 
+        foreach ($request_data as $data_name => $data_value) {
+            if (in_array($data_name, $multivalues)) {
+                $data_value = explode(', ', $data_value);
+            }
+        }
+
         $undotted_request_data = Arr::undot($request_data);
 
         foreach (['json', 'params'] as $prefix) {
             // Remove the dotted params
             foreach ($request_data as $data_name => $data_value) {
                 if (strpos($data_name, "$prefix.") === 0) {
-                    if (in_array($data_name, $multivalues)) {
-                        $data_value = explode(', ', $data_value);
-                    }
                     unset($request_data[$data_name]);
                 }
             }
