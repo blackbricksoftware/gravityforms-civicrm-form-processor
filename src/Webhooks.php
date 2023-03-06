@@ -259,7 +259,7 @@ class Webhooks
             }
         }
 
-        foreach($feed['fieldValues'] as $fv) {
+        foreach($feed['meta']['fieldValues'] as $fv) {
             if (array_key_exists($fv['value'], $multivalues)) {
                 $multivalues[$fv['value']] = $fv['custom_key'];
             }
