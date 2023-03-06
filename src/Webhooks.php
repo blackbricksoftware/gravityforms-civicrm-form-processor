@@ -254,7 +254,7 @@ class Webhooks
 
         //find checkbox fields (support multivalues)
         $multiselects = array_filter($form['fields'], function($v, $k) {
-            return $v->type = 'checkbox';
+            return $v->type == 'checkbox';
         }, ARRAY_FILTER_USE_BOTH);
         GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Multiselects): ' . print_r($multiselects, true), KLogger::DEBUG);
 
