@@ -269,7 +269,11 @@ class Webhooks
 
         foreach ($request_data as $data_name => $data_value) {
             if (in_array($data_name, $multivalues)) {
-                $request_data[$data_name] = explode(', ', $data_value);
+                $exploded_values = explode(', ', $data_value);
+                if (count($exploded_values) == 1) {
+                    $exploded_values = array_pop($exploded_values);
+                }
+                $request_data[$data_name] = $exploded_values;
             }
         }
 
