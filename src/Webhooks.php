@@ -245,6 +245,7 @@ class Webhooks
             return $request_data;
         }
 
+        // identify gf field ids of checkboxes (multi-value)
         $multivalues = [];
         foreach($form['fields'] as $field) {
             if ($field->type == 'checkbox') {
@@ -252,15 +253,18 @@ class Webhooks
             }
         }
 
+        // map gf field ids to their civicrm field counterpart
         foreach($feed['meta']['fieldValues'] as $fv) {
             if (array_key_exists($fv['value'], $multivalues)) {
                 $multivalues[$fv['value']] = $fv['custom_key'];
             }
         }
 
+        // explode multi-values into arrays for CiviCRM consumption
         foreach ($request_data as $data_name => $data_value) {
             if (in_array($data_name, $multivalues)) {
                 $exploded_values = explode(', ', $data_value);
+                // if only one value is submitted, it shouldn't be submitted as array with single element
                 if (count($exploded_values) == 1) {
                     $exploded_values = array_pop($exploded_values);
                 }
