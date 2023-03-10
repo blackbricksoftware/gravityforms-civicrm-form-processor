@@ -36,7 +36,7 @@ add_filter( 'gform_tooltips', [ $tooltips, 'add_gfform_tooltips' ], 10, 2);
 add_filter( 'gform_gravityformswebhooks_feed_settings_fields', [ $webhooks, 'body_fields_settings' ], 10, 2 );
 
 // Modify outgoing webhook format
-add_filter( 'gform_webhooks_request_data', [ $webhooks, 'maybe_undot_request_keys' ], 10, 2 );
+add_filter( 'gform_webhooks_request_data', [ $webhooks, 'maybe_undot_request_keys' ], 10, 4 );
 
 // (if enabled) Send a notification email of failed webhook
 add_action( 'gform_webhooks_post_request', [ $webhooks, 'failed_webhook_notification' ], 10, 4 );

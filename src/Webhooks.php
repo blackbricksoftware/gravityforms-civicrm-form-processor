@@ -220,7 +220,7 @@ class Webhooks
      * If Structured body fields is enabled, array undot their keys
      * https://docs.gravityforms.com/gform_webhooks_request_data/
      */
-    public function maybe_undot_request_keys($request_data, $feed)
+    public function maybe_undot_request_keys($request_data, $feed, $entry, $form)
     {
 
         // Nothing?
@@ -243,6 +243,33 @@ class Webhooks
         GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Enabled?):' .  rgars($feed, 'meta/CiviCRMAPIBodyFields'), KLogger::DEBUG);
         if (!rgars($feed, 'meta/CiviCRMAPIBodyFields')) {
             return $request_data;
+        }
+
+        // identify gf field ids of checkboxes (multi-value)
+        $multivalues = [];
+        foreach($form['fields'] as $field) {
+            if ($field->type == 'checkbox') {
+                $multivalues[$field->id] = '';
+            }
+        }
+
+        // map gf field ids to their civicrm field counterpart
+        foreach($feed['meta']['fieldValues'] as $fv) {
+            if (array_key_exists($fv['value'], $multivalues)) {
+                $multivalues[$fv['value']] = $fv['custom_key'];
+            }
+        }
+
+        // explode multi-values into arrays for CiviCRM consumption
+        foreach ($request_data as $data_name => $data_value) {
+            if (in_array($data_name, $multivalues)) {
+                $exploded_values = explode(', ', $data_value);
+                // if only one value is submitted, it shouldn't be submitted as array with single element
+                if (count($exploded_values) == 1) {
+                    $exploded_values = array_pop($exploded_values);
+                }
+                $request_data[$data_name] = $exploded_values;
+            }
         }
 
         $undotted_request_data = Arr::undot($request_data);
