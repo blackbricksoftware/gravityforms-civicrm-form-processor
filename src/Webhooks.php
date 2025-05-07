@@ -260,10 +260,10 @@ class Webhooks
             }
         }
 
-        // explode multi-values into arrays for CiviCRM consumption
+        // explode multi-values into arrays for CiviCRM consumption (and trim whitespace in values)
         foreach ($request_data as $data_name => $data_value) {
             if (in_array($data_name, $multivalues)) {
-                $exploded_values = explode(', ', $data_value);
+                $exploded_values = array_map('trim', explode(',', $data_value));
                 // if only one value is submitted, it shouldn't be submitted as array with single element
                 if (count($exploded_values) == 1) {
                     $exploded_values = array_pop($exploded_values);
