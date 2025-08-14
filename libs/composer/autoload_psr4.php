@@ -13,9 +13,11 @@ return array(
     'Symfony\\Component\\Translation\\' => array($vendorDir . '/symfony/translation'),
     'Psr\\SimpleCache\\' => array($vendorDir . '/psr/simple-cache/src'),
     'Psr\\Container\\' => array($vendorDir . '/psr/container/src'),
-    'Illuminate\\Support\\' => array($vendorDir . '/illuminate/macroable', $vendorDir . '/illuminate/collections', $vendorDir . '/illuminate/support'),
+    'Psr\\Clock\\' => array($vendorDir . '/psr/clock/src'),
+    'Illuminate\\Support\\' => array($vendorDir . '/illuminate/support', $vendorDir . '/illuminate/collections', $vendorDir . '/illuminate/macroable', $vendorDir . '/illuminate/conditionable'),
     'Illuminate\\Contracts\\' => array($vendorDir . '/illuminate/contracts'),
-    'Doctrine\\Inflector\\' => array($vendorDir . '/doctrine/inflector/lib/Doctrine/Inflector'),
+    'Doctrine\\Inflector\\' => array($vendorDir . '/doctrine/inflector/src'),
+    'Carbon\\Doctrine\\' => array($vendorDir . '/carbonphp/carbon-doctrine-types/src/Carbon/Doctrine'),
     'Carbon\\' => array($vendorDir . '/nesbot/carbon/src/Carbon'),
     'BlackBrickSoftware\\GravityFormsCiviCRMFormProcessor\\' => array($baseDir . '/src'),
 );
