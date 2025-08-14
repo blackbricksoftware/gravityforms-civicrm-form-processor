@@ -5,7 +5,7 @@
  * Description: Add functionality to make Gravity Forms to CiviCRM integrations easier.
  * Author: Black Brick Software LLC
  * Author URI: https://blackbricksoftware.com
- * Version: v1.0.0-beta3
+ * Version: v1.0.0-beta4
  * Text Domain: gravityforms-civicrm-form-processor
  *
  * Gravity Forms CiviCRM Form Processor is free software: you can redistribute it and/or modify
@@ -21,7 +21,27 @@
 
 defined('ABSPATH') || die();
 
+/**
+ * Composer dependencies
+ */
 require_once __DIR__ . '/libs/autoload.php';
+
+/**
+ * Include GravityForms classes
+ * Not all are always available
+ */
+// Required for GF_Entry_List_Table::__construct
+if ( ! class_exists( 'GFEntryLocking' ) ) {
+    require_once GFCommon::get_base_path() . '/includes/locking/locking.php';
+}
+// Used directly
+if ( ! class_exists( 'GF_Entry_List_Table' ) ) {
+    require_once GFCommon::get_base_path() . '/entry_list.php';
+}
+// Used directly
+if ( ! class_exists( 'GFNotification') ) {
+    require_once GFCommon::get_base_path() . '/notification.php';
+}
 
 use BlackBrickSoftware\GravityFormsCiviCRMFormProcessor\Webhooks;
 use BlackBrickSoftware\GravityFormsCiviCRMFormProcessor\Tooltips;
