@@ -9,14 +9,6 @@ use GFNotification;
 use Illuminate\Support\Arr;
 use KLogger;
 
-// Not always included
-if ( ! class_exists('GF_Entry_List_Table') ) {
-    require_once GFCommon::get_base_path() . '/entry_list.php';
-}
-if ( ! class_exists( 'GFNotification' ) ) {
-    require_once GFCommon::get_base_path() . '/notification.php';
-}
-
 class Webhooks
 {
     /**
@@ -398,7 +390,6 @@ class Webhooks
 
         GFCommon::send_email( $from, $to, $bcc, '', $subject, $message, $fromName, 'html', '', $entry );
     }
-
     
     public function get_notification_debug_html( $response, $feed, $entry, $form, $responseData = null ) {
         
