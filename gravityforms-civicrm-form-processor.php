@@ -1,4 +1,5 @@
 <?php
+
 /**
  * Plugin Name: Gravity Forms CiviCRM Form Processor
  * Plugin URI: https://github.com/blackbricksoftware/gravityforms-civicrm-form-processor
@@ -27,36 +28,27 @@ defined('ABSPATH') || die();
 require_once __DIR__ . '/libs/autoload.php';
 
 /**
- * Include GravityForms classes
- * Not all are always available
+ *
  */
-// Required for GF_Entry_List_Table::__construct
-if ( ! class_exists( 'GFEntryLocking' ) ) {
-    require_once GFCommon::get_base_path() . '/includes/locking/locking.php';
-}
-// Used directly
-if ( ! class_exists( 'GF_Entry_List_Table' ) ) {
-    require_once GFCommon::get_base_path() . '/entry_list.php';
-}
-// Used directly
-if ( ! class_exists( 'GFNotification') ) {
-    require_once GFCommon::get_base_path() . '/notification.php';
-}
 
-use BlackBrickSoftware\GravityFormsCiviCRMFormProcessor\Webhooks;
+
+use BlackBrickSoftware\GravityFormsCiviCRMFormProcessor\Loader;
 use BlackBrickSoftware\GravityFormsCiviCRMFormProcessor\Tooltips;
+use BlackBrickSoftware\GravityFormsCiviCRMFormProcessor\Webhooks;
 
-$tooltips = new Tooltips;
-$webhooks = new Webhooks;
+$webhooks = new Webhooks();
+
+// Include GravityForms classes, Not all are always available
+add_action('init', [Loader::class, 'include_gravity_forms_classes']);
 
 // More available tool tips
-add_filter( 'gform_tooltips', [ $tooltips, 'add_gfform_tooltips' ], 10, 2);
+add_filter('gform_tooltips', [Tooltips::class, 'add_gfform_tooltips'], 10, 2);
 
 // Add settings
-add_filter( 'gform_gravityformswebhooks_feed_settings_fields', [ $webhooks, 'body_fields_settings' ], 10, 2 );
+add_filter('gform_gravityformswebhooks_feed_settings_fields', [Webhooks::class, 'body_fields_settings'], 10, 2);
 
 // Modify outgoing webhook format
-add_filter( 'gform_webhooks_request_data', [ $webhooks, 'maybe_undot_request_keys' ], 10, 4 );
+add_filter('gform_webhooks_request_data', [Webhooks::class, 'maybe_undot_request_keys'], 10, 4);
 
 // (if enabled) Send a notification email of failed webhook
-add_action( 'gform_webhooks_post_request', [ $webhooks, 'failed_webhook_notification' ], 10, 4 );
+add_action('gform_webhooks_post_request', [Webhooks::class, 'failed_webhook_notification'], 10, 4);
