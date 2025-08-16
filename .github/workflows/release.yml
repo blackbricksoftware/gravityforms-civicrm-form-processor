@@ -19,11 +19,11 @@ jobs:
           mv !(gravityforms-civicrm-form-processor|.git|.github) gravityforms-civicrm-form-processor/
 
       - name: Create custom zip
-        run: zip -r blackbricksoftware-gf-civi-processor.zip gravityforms-civicrm-form-processor
+        run: zip -r gravityforms-civicrm-form-processor.zip gravityforms-civicrm-form-processor
 
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
-          files: blackbricksoftware-gf-civi-processor.zip
+          files: gravityforms-civicrm-form-processor.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
