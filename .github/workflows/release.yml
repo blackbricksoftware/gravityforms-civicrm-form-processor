@@ -1,0 +1,23 @@
+name: Create Release with Custom Zip
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Create custom zip
+        run: zip -r blackbricksoftware-gf-civi-processor.zip . -x "*.git*" "config/local.yaml"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: blackbricksoftware-gf-civi-processor.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
