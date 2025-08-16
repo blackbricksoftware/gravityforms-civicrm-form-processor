@@ -7,6 +7,7 @@ use GF_Entry_List_Table;
 use GFLogging;
 use GFNotification;
 use Illuminate\Support\Arr;
+use JsonException;
 use KLogger;
 
 class Webhooks
