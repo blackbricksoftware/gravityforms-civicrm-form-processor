@@ -12,8 +12,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Create subdirectory and move files
+        run: |
+          mkdir gravityforms-civicrm-form-processor
+          shopt -s extglob
+          mv !(gravityforms-civicrm-form-processor|.git|.github) gravityforms-civicrm-form-processor/
+
       - name: Create custom zip
-        run: zip -r blackbricksoftware-gf-civi-processor.zip . -x "*.git*" "config/local.yaml"
+        run: zip -r blackbricksoftware-gf-civi-processor.zip gravityforms-civicrm-form-processor
 
       - name: Create release
         uses: softprops/action-gh-release@v1
