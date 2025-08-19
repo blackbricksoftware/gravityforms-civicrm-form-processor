@@ -2,23 +2,24 @@
 
 namespace BlackBrickSoftware\GravityFormsCiviCRMFormProcessor;
 
+use GFAPI;
 use GFCommon;
-use GF_Entry_List_Table;
 use GFLogging;
 use GFNotification;
+use Exception;
 use Illuminate\Support\Arr;
 use JsonException;
 use KLogger;
 
-class Webhooks
+abstract class Webhooks
 {
     /**
     * Add a setting to specify if JSON request body fields should be structured
     * https://docs.gravityforms.com/gform_addon_feed_settings_fields/
     */
-    public static function body_fields_settings($feed_settings_fields, $addon)
+    public static function body_fields_settings($feed_settings_fields, $addon): array
     {
-        $feed_settings_fields[] = [
+        $feed_settings_fields['civicrm_webhook_fields'] = [
             'title'  => esc_html__('CiviCRM Settings (Must use Request Format FORM)', 'gravityforms-civicrm-form-processor'),
             'fields' => [
                 // Add a toggle to turn on CiviCRM compatibility
@@ -60,12 +61,10 @@ class Webhooks
                                 ],
                         ],
                     ],
-                    'checkbox_label' => esc_html__('Enable Failure Notification', 'gravityforms-civicrm-form-processor'),
-                    'instructions'   => esc_html__('Execute Webhook if', 'gravityforms-civicrm-form-processor'),
                     'tooltip'        => sprintf(
                         '<h6>%s</h6>%s',
                         esc_html__('Failure Notifications', 'gravityforms-civicrm-form-processor'),
-                        esc_html__('When failure notifications are enabled, the the response from the webhooks will be intelligently analyzed for https status code failure and specific CiviCRM error messages.', 'gravityforms-civicrm-form-processor')
+                        esc_html__('When failure notifications are enabled, the response from the webhooks will be intelligently analyzed for https status code failure and specific CiviCRM error messages.', 'gravityforms-civicrm-form-processor')
                     ),
                 ],
                 // To Email for notification settings for failed webhooks
@@ -203,7 +202,7 @@ class Webhooks
     /**
      * Function to use in validation callbacks to validate value is an email
      */
-    public static function email_validation_callback($field, $value)
+    public static function email_validation_callback($field, $value): void
     {
         if (!empty($value) && ! GFNotification::is_valid_notification_email($value)) {
             $field->set_error(__("Please enter a valid email address or merge tag in the field.", 'gravityforms-civicrm-form-processor'));
@@ -214,7 +213,7 @@ class Webhooks
      * If Structured body fields is enabled, array undot their keys
      * https://docs.gravityforms.com/gform_webhooks_request_data/
      */
-    public static function maybe_undot_request_keys($request_data, $feed, $entry, $form)
+    public static function maybe_undot_request_keys($request_data, $feed, $entry, $form): array
     {
 
         // Nothing?
@@ -291,58 +290,56 @@ class Webhooks
      * If enabled, mail contents and response of failed webhook
      * https://docs.gravityforms.com/gform_webhooks_post_request/
      */
-    public static function failed_webhook_notification($response, $feed, $entry, $form)
+    public static function after_webhook_actions($response, $feed, $entry, $form): void
     {
-
-        $notification = rgars($feed, 'meta/CiviCRMWebhookFailureNotification', false);
-
-        // Not enabled
-        if (!$notification) {
-            return;
-        }
-
         /**
-         * Some form DNS Error
+         * Check for Errors
+         * Feeds are processed in a try block: GF_Feed_Processor::task
+         * If you throw an exception, it will be queued for retry
          */
+
+        // Some form DNS Error
         if (is_wp_error($response)) {
-            static::log_variables('Post Webhook Failed: is_wp_error( $response )', $response, $feed, $entry, $form);
-            static::send_failed_webhook_email('Network Error', 'Sending data to CiviCRM failed with a possible network error.', $response, $feed, $entry, $form);
-            return;
+            $msg = 'Post Webhook Failed: is_wp_error( $response )';
+            static::log_variables($msg, $response, $feed, $entry, $form);
+            static::send_failed_webhook_email($msg, 'Network Error: Sending data to CiviCRM failed with a possible network error.', $response, $feed, $entry, $form);
+            throw new Exception($msg);
         }
 
-        /**
-         * Some form of HTTP Error
-         */
+        // Some form of HTTP Error
         if ($response['response']['code'] !== 200) { // I think CiviCRM always returns 200 for success
-            static::log_variables('Post Webhook Failed: $response[response][code] !== 200', $response, $feed, $entry, $form);
-            static::send_failed_webhook_email('Invalid HTTP Status Code', 'Sending data to CiviCRM failed with an invalid return code.', $response, $feed, $entry, $form);
-            return;
+            $msg = 'Post Webhook Failed: $response[response][code] !== 200';
+            static::log_variables($msg, $response, $feed, $entry, $form);
+            static::send_failed_webhook_email($msg, 'Invalid HTTP Status Code: Sending data to CiviCRM failed with an invalid return code.', $response, $feed, $entry, $form);
+            throw new Exception($msg);
         }
 
-        /**
-         * Response not JSON
-         */
+        // Response not JSON
         try {
             $responseData = json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $e) {
-            static::log_variables('Post Webhook: $response[body] is not JSON', $response, $feed, $entry, $form);
-            static::send_failed_webhook_email('Response Was Not JSON', 'Sending data to CiviCRM failed with a return payload that was not valid JSON. Verify the GET or POST parameters contain a \'json\' key.', $response, $feed, $entry, $form);
-            return;
+            $msg = 'Post Webhook: $response[body] is not JSON';
+            static::log_variables($msg, $response, $feed, $entry, $form);
+            static::send_failed_webhook_email($msg, 'Response Was Not JSON: Sending data to CiviCRM failed with a return payload that was not valid JSON. Verify the GET or POST parameters contain a \'json\' key.', $response, $feed, $entry, $form);
+            throw new Exception($msg);
+        }
+
+        // CiviCRM API (v3 or v4) or Form Processor Error Error
+        $api3Error = $responseData['is_error'] ?? false;
+        $api4Error = array_key_exists('error_code', $responseData);
+        if ($api3Error || $api4Error) {
+            $msg = 'Post Webhook Failed: $responseData[is_error] || array_key_exists(error_code, $responseData)';
+            static::log_variables($msg, $response, $feed, $entry, $form, $responseData);
+            static::send_failed_webhook_email($msg, 'CiviCRM API Returned an Error: The CiviCRM API returned an error message. Verify all required field are submitted and contain valid data.', $response, $feed, $entry, $form, $responseData);
+            throw new Exception($msg);
         }
 
         /**
-         * CiviCRM API (v3 or v4) or Form Processor Error Error
+         * Success or at least no error detected
          */
-        if ($responseData['is_error'] || array_key_exists('error_code', $responseData)) {
-            static::log_variables('Post Webhook Failed: $responseData[is_error] || array_key_exists(error_code, $responseData)', $response, $feed, $entry, $form, $responseData);
-            static::send_failed_webhook_email('CiviCRM API Returned an Error', 'The CiviCRM API returned an error message. Verify all required field are submitted and contain valid data.', $response, $feed, $entry, $form, $responseData);
-            return;
-        }
-
-        // No Error Detected (probably)
     }
 
-    public static function log_variables($msg, ...$vars)
+    protected static function log_variables($msg, ...$vars): void
     {
 
         GFLogging::log_message('gravityformswebhooks', $msg);
@@ -352,14 +349,16 @@ class Webhooks
         }
     }
 
-    public static function send_failed_webhook_email($header, $errorMsg, $response, $feed, $entry, $form, $responseData = null)
+    protected static function send_failed_webhook_email($header, $errorMsg, $response, $feed, $entry, $form, $responseData = null): void
     {
-
-        $entryListTable = new GF_Entry_List_Table([
-            'form' => $form,
-        ]);
+        $notification = rgars($feed, 'meta/CiviCRMWebhookFailureNotification', false);
+        if (!$notification) {
+            return;
+        }
+        
+        $formId = $form['id'];
         $entryId = $entry['id'];
-        $entryUrl = $entryListTable->get_detail_url($entry);
+        $entryUrl = get_bloginfo('wpurl') . '/wp-admin/admin.php?page=gf_entries&view=entry&id=' . $formId . '&lid=' . $entryId;
 
         $toRaw = rgars($feed, 'meta/CiviCRMWebhookFailureNotificationTo');
         $fromNameRaw = rgars($feed, 'meta/CiviCRMWebhookFailureNotificationFromName');
@@ -393,10 +392,13 @@ class Webhooks
         $debugInfo
         MSG;
 
-        GFCommon::send_email($from, $to, $bcc, '', $subject, $message, $fromName, 'html', '', $entry);
+        GFCommon::send_email($from, $to, $bcc, '', $subject, $message, $fromName, 'html', '', $entry, [
+            'id' => uniqid(),
+            'name' => 'CiviCRM Webhook Failure Notification',
+        ]);
     }
 
-    public static function get_notification_debug_html($response, $feed, $entry, $form, $responseData = null)
+    protected static function get_notification_debug_html($response, $feed, $entry, $form, $responseData = null): string
     {
 
         $responseDump = static::dump_and_encode($response);
@@ -441,7 +443,7 @@ class Webhooks
         return $debugInfo;
     }
 
-    public static function dump_and_encode($rawText)
+    protected static function dump_and_encode($rawText): string
     {
         return htmlspecialchars(print_r($rawText, true));
     }

@@ -49,3 +49,14 @@ This extension also add the option to send an email notification when a webhook 
       2. Any key that needs pass to CiviCRM in the `json` (v3) or `params` (v4) JSON encoded form value, prepend `json.` or `params.` respectively. For example, to send CiviCRM a first name in the request, create the key `json.first_name`.
 
 ![Gravity Forms Webhook Settings](images/gfsettings.png)
+
+### Other settings
+
+Two additional helper settings are added to the form settings.
+
+![Gravity Forms Form Settings](images/gfformsettings.png)
+
+ - **Delete entries after Webhook are completed successfully**: Enabling this setting will delete entries after all Webhooks successfully resolve. Useful for data security.
+ - **Number of times to try submitting a Webhook**: By default, Gravity Forms will only attempt to submit a Webhooks one time. This setting will allow a Webhook to be tried multiple times.
+
+![Gravity Forms Form Settings Explanation](images/gfformsettingsfields.png)
