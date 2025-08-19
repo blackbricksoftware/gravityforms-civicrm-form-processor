@@ -2,12 +2,12 @@
 
 namespace BlackBrickSoftware\GravityFormsCiviCRMFormProcessor;
 
-class Tooltips
+abstract class Tooltips
 {
     /**
      * Add additional tooltips
      */
-    public static function add_gfform_tooltips($gfform_tooltips)
+    public static function add_gfform_tooltips($gfform_tooltips): array
     {
         $additional_tooltips = [
             'civicrm_notification_send_to_email' => '<strong>' . __('Send To Email Address', 'gravityforms-civicrm-form-processor') . '</strong>' . __('Enter the email address you would like the notification email sent to.', 'gravityforms-civicrm-form-processor'),
