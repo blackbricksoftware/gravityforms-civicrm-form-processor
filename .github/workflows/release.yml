@@ -12,18 +12,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Create subdirectory and move files
-        run: |
-          mkdir gravityforms-civicrm-form-processor
-          shopt -s extglob
-          mv !(gravityforms-civicrm-form-processor|.git|.github) gravityforms-civicrm-form-processor/
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          tools: composer:v2
 
-      - name: Create custom zip
-        run: zip -r gravityforms-civicrm-form-processor.zip gravityforms-civicrm-form-processor
+      - name: Install Composer dependencies
+        run: composer install --no-dev --optimize-autoloader
+
+      - name: Create release zip
+        run: |
+          zip -r gravity_forms_civicrm_form_processor.zip . \
+            -x ".git/*" \
+            -x ".github/*" \
+            -x ".gitignore"
 
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
-          files: gravityforms-civicrm-form-processor.zip
+          files: gravity_forms_civicrm_form_processor.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
