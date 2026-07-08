@@ -27,7 +27,9 @@ defined('ABSPATH') || die();
 /**
  * Composer dependencies
  */
-require_once __DIR__ . '/vendor/autoload.php';
+if (file_exists(__DIR__ . '/vendor/autoload.php')) {
+  require_once __DIR__ . '/vendor/autoload.php';
+}
 
 // Include GravityForms classes, Not all are always available
 add_action('init', [Loader::class, 'include_gravity_forms_classes']);
