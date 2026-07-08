@@ -52,6 +52,12 @@ abstract class Forms
             return $max_attempts;
         }
 
+        // Per-feed override wins; blank/invalid falls back to the form-level setting (backward compatible)
+        $feedOverride = rgars($feed, 'meta/CiviCRMWebhookMaxAttempts');
+        if (is_numeric($feedOverride) && (int)$feedOverride >= 1) {
+            return (int)$feedOverride;
+        }
+
         $max_attempts = (int)($form['CiviCRMWebhookMaxAttempts'] ?? $max_attempts);
         if ($max_attempts < 1) {
             $max_attempts = 1;

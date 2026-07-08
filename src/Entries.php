@@ -43,8 +43,15 @@ abstract class Entries
         GFLogging::log_message('gravityformswebhooks', "CiviCRM Form Processor Entry Deletion Feeds (Feed Ids: " . implode(', ', $feedIds). ")", KLogger::DEBUG);
 
         $success = true;
+        $activeFeedCount = 0;
         foreach ($feeds as $feed) {
-            
+
+            // Skip inactive feeds: they never run, so they have no status and must not block deletion
+            if (!rgar($feed, 'is_active')) {
+                continue;
+            }
+            $activeFeedCount++;
+
             $feedId = $feed['id'] ?? null;
             GFLogging::log_message('gravityformswebhooks', "CiviCRM Form Processor Entry Deletion Checking Feed (Feed Id: $feedId)", KLogger::DEBUG);
 
@@ -74,7 +81,8 @@ abstract class Entries
             }
         }
 
-        if ($success) {
+        // Only delete when at least one active feed ran and every active feed succeeded
+        if ($success && $activeFeedCount > 0) {
             GFLogging::log_message('gravityformswebhooks', "CiviCRM Form Processor Entry Deletion Deleting Entry (Entry Id: $entryId)", KLogger::DEBUG);
             GFAPI::delete_entry($entryId);
         }

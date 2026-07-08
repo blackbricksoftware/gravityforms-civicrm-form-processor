@@ -196,6 +196,37 @@ abstract class Webhooks
             ],
         ];
 
+        // Per-webhook request resilience settings, isolated to the firing feed's request
+        $feed_settings_fields['civicrm_webhook_request_settings'] = [
+            'title'  => esc_html__('CiviCRM Webhook Request Settings', 'gravityforms-civicrm-form-processor'),
+            'fields' => [
+                [
+                    'name'                => 'CiviCRMWebhookTimeout',
+                    'type'                => 'text',
+                    'label'               => esc_html__('Request Timeout (seconds)', 'gravityforms-civicrm-form-processor'),
+                    'default_value'       => 30,
+                    'validation_callback' => [static::class, 'positive_int_validation_callback'],
+                    'tooltip'             => sprintf(
+                        '<h6>%s</h6>%s',
+                        esc_html__('Request Timeout', 'gravityforms-civicrm-form-processor'),
+                        esc_html__('Maximum number of seconds to wait for this webhook\'s HTTP request before it times out. Overrides the WordPress default of 5 seconds for this webhook only. Defaults to 30 seconds; increase it if CiviCRM is slow to respond and you are seeing cURL error 28 (Operation timed out).', 'gravityforms-civicrm-form-processor')
+                    ),
+                ],
+                [
+                    'name'                => 'CiviCRMWebhookMaxAttempts',
+                    'type'                => 'text',
+                    'label'               => esc_html__('Max Attempts (override form setting)', 'gravityforms-civicrm-form-processor'),
+                    'default_value'       => '',
+                    'validation_callback' => [static::class, 'positive_int_validation_callback'],
+                    'tooltip'             => sprintf(
+                        '<h6>%s</h6>%s',
+                        esc_html__('Webhook Max Attempts (per feed)', 'gravityforms-civicrm-form-processor'),
+                        esc_html__('Number of times to attempt this specific webhook before giving up. Overrides the form-level "Number of times to try submitting a Webhook" setting for this feed only. Leave blank to use the form-level setting.', 'gravityforms-civicrm-form-processor')
+                    ),
+                ],
+            ],
+        ];
+
         return $feed_settings_fields;
     }
 
@@ -207,6 +238,41 @@ abstract class Webhooks
         if (!empty($value) && ! GFNotification::is_valid_notification_email($value)) {
             $field->set_error(__("Please enter a valid email address or merge tag in the field.", 'gravityforms-civicrm-form-processor'));
         }
+    }
+
+    /**
+     * Validate a positive whole number, or blank. Shared by the per-feed numeric
+     * settings (request timeout, max attempts) where blank means "use the default".
+     */
+    public static function positive_int_validation_callback($field, $value): void
+    {
+        if ($value === '' || $value === null) {
+            return;
+        }
+        if (!ctype_digit((string) $value) || (int) $value < 1) {
+            $field->set_error(__('Please enter a positive whole number, or leave it blank.', 'gravityforms-civicrm-form-processor'));
+        }
+    }
+
+    /**
+     * Set a per-webhook HTTP request timeout, isolated to the firing feed's request.
+     * Overrides the WordPress default (5s) for this webhook only, rather than globally.
+     * https://docs.gravityforms.com/gform_webhooks_request_args/
+     */
+    public static function set_request_timeout($request_args, $feed, $entry, $form): array
+    {
+        $timeout = rgars($feed, 'meta/CiviCRMWebhookTimeout');
+
+        // Not configured for this feed: leave the WordPress default in place.
+        if (!is_numeric($timeout) || (int) $timeout < 1) {
+            return $request_args;
+        }
+
+        $request_args['timeout'] = (int) $timeout;
+
+        GFLogging::log_message('gravityformswebhooks', sprintf('CiviCRM Form Processor: webhook request timeout set to %d seconds for feed %s', (int) $timeout, rgar($feed, 'id')), KLogger::DEBUG);
+
+        return $request_args;
     }
 
     /**
