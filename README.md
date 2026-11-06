@@ -101,6 +101,17 @@ New versions are published as GitHub releases, and WordPress offers them on the 
 
 The release zips for 1.0.1–2.0.0 had no folder inside them, so a site that uploaded one has the plugin in a folder named after the zip (`gravity_forms_civicrm_form_processor`, or on WordPress 7.1.4 and later that name plus random characters). The new version's folder is `gravityforms-civicrm-form-processor`, so WordPress installs it beside the old copy instead of replacing it, and the Plugins page lists the plugin twice until the old one is deleted. Nothing is lost: the plugin's form and webhook settings are stored by Gravity Forms. (2.1.0 doesn't deactivate the old copy itself: if you installed 2.1.0 this way, deactivate and delete the v2.0.0 copy by hand.) Composer and git installs update as above instead.
 
+### Recovering entries deleted after a failed webhook
+
+Up to 2.2.0, with Gravity Forms 3.0.2 or later on a live site (`WP_DEBUG` off), a webhook CiviCRM answered with a failure was recorded as sent, and "Delete entries after Webhook are completed successfully" deleted its entry. 2.3.0 fixes that. Each such entry's failure email (if the webhook had one) holds a full copy of it, the `$entry` part, and `bin/recover-entries.php` puts those entries back under their original ids:
+
+1. Copy each email's text (the `$entry` part, or the whole email) into `.txt` files in a folder, for example `.working/` at the repository's root, which git ignores. A file may hold several. If Gmail shows "View entire message", open that first, or the copy is cut short.
+2. Copy that folder and `bin/recover-entries.php` to the site, and run `wp eval-file recover-entries.php .working` there. This is a dry run: it lists each entry it found by id, form, date and number of fields, and changes nothing.
+3. Run it again with `apply` (and, to limit it, an id range: `wp eval-file recover-entries.php .working apply 1681-1710`). It never changes an entry that already exists, and sends nothing; each entry it puts back gets a note saying so.
+4. Once the cause of the failure is fixed, select the entries on the Entries list and use **Send webhooks again**. Then delete the folder from the site: it holds personal data.
+
+The script prints only ids, form ids, dates and counts, never what was submitted.
+
 ## Releasing
 
 1. Set the version in the plugin header, `Version: X.Y.Z`, with no `v` (WordPress compares it as written, and PHP sorts `v2.1.0` below `2.1.0`).

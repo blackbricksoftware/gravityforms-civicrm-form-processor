@@ -403,7 +403,7 @@ else
   PAGE=$(curl -s -b "$JAR" "$ENTRYPAGE")
   BOXID=gravityforms_civicrm_form_processor_webhooks
   if grep -q "id=\"$BOXID\"" <<< "$PAGE" && grep -q "<input type=\"checkbox\" value=\"$FEED\" id=\"${BOXID}_$FEED\" />" <<< "$PAGE" \
-    && grep -q "To CiviCRM <span class=\"description\" data-status=\"$FEED\">(not sent yet)</span>" <<< "$PAGE" && grep -q "value=\"$ALSOFEED\"" <<< "$PAGE" && ! grep -q "value=\"$OFFFEED\"" <<< "$PAGE"; then
+    && grep -q "To CiviCRM <span class=\"description\" data-status=\"$FEED\">(not sent yet)</span>" <<< "$PAGE" && grep -q "id=\"${BOXID}_$ALSOFEED\"" <<< "$PAGE" && ! grep -q "id=\"${BOXID}_$OFFFEED\"" <<< "$PAGE"; then
     pass "the entry's page has a Webhooks box with a checkbox for each active webhook, not the one turned off"; else fail "the entry's page has a Webhooks box with a checkbox for each active webhook ($IDS)"; fi
   NONCE=$(grep -o "data.append('nonce', \"[^\"]*\")" <<< "$PAGE" | head -1 | sed "s/.*, \"//; s/\")//")
   # The box's request, as its Send button makes it, for the ticked webhooks (a comma-separated list of ids).
@@ -538,6 +538,38 @@ else
   if notes "$PROD2" | grep -q 'Webhook was not successfully executed. The server answered with HTTP 403.'; then pass "  and the entry's notes say why"; else fail "  and the entry's notes say why"; notes "$PROD2"; fi
   rm -f "${CAP:?}/answer.json" "$WP/wp-content/gfcfp-debug-off"
   wpq eval 'global $wpdb; $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE \"wp_gf_webhooks_feed_processor%\"" );' > /dev/null
+
+  # bin/recover-entries.php puts back entries that were deleted, from the copy in the webhook failure email, under their
+  # own ids. An entry with a paragraph over several lines, a name with its parts and characters HTML escapes; its
+  # failure email (as the sandbox kept it), saved as the email's HTML and as text copied from it; then the entry deleted.
+  RECOVER="$SB/working"; mkdir -p "$RECOVER" && rm -f "${RECOVER:?}/email.html" "${RECOVER:?}/copied.txt"
+  REC=$(wpq eval '
+    $form = GFAPI::add_form( array( "title" => "Recovery test " . wp_generate_password( 6, false ), "fields" => array(
+      array( "type" => "text", "id" => 1, "label" => "First name" ), array( "type" => "email", "id" => 2, "label" => "Email" ),
+      array( "type" => "textarea", "id" => 3, "label" => "Message" ),
+      array( "type" => "name", "id" => 4, "label" => "Name", "inputs" => array( array( "id" => "4.3", "label" => "First" ), array( "id" => "4.6", "label" => "Last" ) ) ) ) ) );
+    $source = GFAPI::get_feed( '"$FEED"' );
+    $feed = GFAPI::add_feed( $form, $source["meta"], "gravityformswebhooks" );
+    $entry = GFAPI::add_entry( array( "form_id" => $form, "1" => "Tom & Jerry <b>", "2" => "recover@example.com", "3" => "Line one\nLine two, with \"quotes\" & <tags>\n  and an indented third", "4.3" => "Ada", "4.6" => "O'\''Lovelace", "ip" => "203.0.113.7", "source_url" => "https://example.org/contact/" ) );
+    echo "$form $feed $entry";' | tail -1)
+  read -r RFORM RFEED RENTRY <<< "$REC"
+  snapshot() { wpq eval '$e = GFAPI::get_entry( '"$RENTRY"' ); if ( is_wp_error( $e ) ) { echo "missing"; exit; } foreach ( array( "date_updated", "is_read" ) as $k ) { unset( $e[ $k ] ); } ksort( $e ); echo md5( wp_json_encode( $e ) );'; }
+  BEFORE=$(snapshot)
+  echo '{"code":500,"body":"Internal Server Error"}' > "$CAP/answer.json"; : > "$MAIL"
+  resend "$RENTRY" "$RFEED" > /dev/null; rm -f "${CAP:?}/answer.json"
+  "$PHP" -r '$m = json_decode( file_get_contents( $argv[1] ), true ); file_put_contents( $argv[2], $m["message"] ); file_put_contents( $argv[3], html_entity_decode( strip_tags( $m["message"] ), ENT_QUOTES | ENT_HTML5, "UTF-8" ) );' "$MAIL" "$RECOVER/email.html" "$RECOVER/copied.txt"
+  wpq eval 'GFAPI::delete_entry( '"$RENTRY"' );' > /dev/null
+  recover() { wp --path="$WP" eval-file "$ROOT/bin/recover-entries.php" "$RECOVER" "$@" 2>&1 | grep -v -i deprecat; }
+  OUT=$(recover)
+  if grep -q "^  would    #$RENTRY (form $RFORM, " <<< "$OUT" && [ "$(snapshot)" = missing ]; then
+    pass "recover-entries.php, a dry run: finds the deleted entry in the email (HTML and copied text), changes nothing"; else fail "recover-entries.php, a dry run"; echo "$OUT" | head -5; fi
+  OUT=$(recover apply)
+  if grep -q "^  restored #$RENTRY (form $RFORM, " <<< "$OUT" && [ "$(snapshot)" = "$BEFORE" ] && notes "$RENTRY" | grep -q 'Put back on .* from the copy in the webhook failure email'; then
+    pass "  apply: the entry is back under its own id #$RENTRY, every field and detail as it was, with a note saying so"; else fail "  apply: the entry is back under its own id, as it was"; echo "$OUT" | head -5; echo "     before $BEFORE, after $(snapshot)"; fi
+  if grep -q -E 'Tom|Jerry|recover@example|Lovelace|Line one|203\.0\.113' <<< "$(recover; recover apply; recover apply 1-2)"; then
+    fail "  its output names nothing that was submitted"; else pass "  its output names nothing that was submitted (only ids, forms, dates, counts)"; fi
+  expect "  run again: the entry is there, so it is left alone" "$(recover apply | grep -c "^  exists   #$RENTRY ")" "1"
+  expect "  an id range that leaves it out: skipped" "$(recover apply 1-2 | grep -c "^  skipped  #$RENTRY ")" "1"
 
   wpq plugin deactivate gravityformswebhooks > /dev/null
   code=$(curl -s -b "$JAR" -o "$SB/page.html" -w "%{http_code}" "$ENTRYPAGE")
