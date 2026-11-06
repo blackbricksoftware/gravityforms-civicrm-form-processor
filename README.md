@@ -69,7 +69,12 @@ Besides the CiviCRM API format, the plugin adds these to Gravity Forms.
  - **Request Timeout (seconds)**: how long to wait for CiviCRM before giving up on this webhook. WordPress's default is 5 seconds, which a busy CiviCRM can exceed.
  - **Max Attempts**: how many times to try this webhook, overriding the form's "Number of times to try submitting a Webhook".
 
-**Sending a webhook again, from an entry's page.** Gravity Forms sends a webhook once, when an entry comes in, and has no way to send it again. If CiviCRM was down, or the webhook was turned off at the time, open the entry (Forms › Entries › the entry): its **Webhooks** box lists the form's active webhooks with how each last went for that entry. Choose one and press **Send**. It goes out straight away, the box shows the result (sent, or what went wrong), and a note on the entry records who sent it. Everything that applies to the webhook applies here too, including the failure email and "Delete entries after Webhook are completed successfully". It sends even if the webhook was already sent, or if its condition doesn't match the entry (marked "[condition not met]"). Users who can edit entries can use it.
+**Sending webhooks again.** Gravity Forms sends a webhook once, when an entry comes in, and has no way to send it again. If CiviCRM was down, or a webhook was turned off at the time:
+
+ - **For one entry:** open it (Forms › Entries › the entry). Its **Webhooks** box lists the form's active webhooks with how each last went for that entry. Tick one or more and press **Send**: they go out straight away, the box shows each result (sent, or what went wrong), and a note on the entry records who sent them. It sends even if a webhook was already sent, or if its condition doesn't match the entry (marked "condition not met").
+ - **For many entries:** select them on the Entries list, choose **Send webhooks again** from the bulk actions and Apply. Each entry's webhooks are queued just as on submission (its active webhooks whose conditions match it), and Gravity Forms sends them in the background with its usual retries. Each entry's notes show how they went.
+
+Either way, everything that applies to a webhook applies here too, including the failure email and "Delete entries after Webhook are completed successfully". Users who can edit entries can use them.
 
 ## Installing
 

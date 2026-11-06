@@ -6,7 +6,7 @@
  * Description: Add functionality to make Gravity Forms to CiviCRM integrations easier.
  * Author: Black Brick Software LLC
  * Author URI: https://blackbricksoftware.com
- * Version: 2.2.0
+ * Version: 2.3.0
  * Requires PHP: 8.2
  * Text Domain: gravityforms-civicrm-form-processor
  * Update URI: https://github.com/blackbricksoftware/gravityforms-civicrm-form-processor

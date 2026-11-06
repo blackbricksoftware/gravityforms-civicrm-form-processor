@@ -8,19 +8,28 @@ use GFNotification;
 use Exception;
 use Illuminate\Support\Arr;
 use JsonException;
+use WP_Error;
 
 abstract class Webhooks
 {
 
+    /** The request argument that marks a request as one of the Webhooks add-on's, for check_civicrm_response(). */
+    public const CHECK = 'gravityforms_civicrm_form_processor_check';
+
+    /** The start of the WP_Error codes check_civicrm_response() gives a failed answer. */
+    public const FAILURE = 'gravityforms_civicrm_form_processor_';
+
     /**
      * Each webhook's CiviCRM settings, and what happens around its request: the CiviCRM API format of the data, the
-     * webhook's own timeout (instead of WordPress's 5 seconds), and, after it, the failure check and email.
+     * webhook's own timeout (instead of WordPress's 5 seconds), the check of CiviCRM's answer, and the failure email.
      */
     public static function register(): void
     {
         add_filter('gform_gravityformswebhooks_feed_settings_fields', [self::class, 'body_fields_settings'], 10, 2);
         add_filter('gform_webhooks_request_data', [self::class, 'maybe_undot_request_keys'], 10, 4);
         add_filter('gform_webhooks_request_args', [self::class, 'set_request_timeout'], 10, 4);
+        add_filter('gform_webhooks_request_args', [self::class, 'mark_request'], 20, 4);
+        add_filter('http_response', [self::class, 'check_civicrm_response'], 10, 3);
         add_action('gform_webhooks_post_request', [self::class, 'after_webhook_actions'], 10, 4);
     }
     /**
@@ -374,53 +383,92 @@ abstract class Webhooks
      * If enabled, mail contents and response of failed webhook
      * https://docs.gravityforms.com/gform_webhooks_post_request/
      */
+    /** The gform_webhooks_request_args filter: marks the request as a webhook's, so its answer is checked. */
+    public static function mark_request($request_args, $feed, $entry, $form): array
+    {
+        $request_args = is_array($request_args) ? $request_args : [];
+        $request_args[self::CHECK] = (int) rgar($feed, 'id');
+        return $request_args;
+    }
+
+    /**
+     * WordPress's http_response filter, for a webhook's request (mark_request()): an answer that is not CiviCRM's
+     * success becomes a WP_Error, with the answer in its data.
+     *
+     * This is how a failure reaches Gravity Forms. The Webhooks add-on treats a WP_Error from the request as a failed
+     * webhook: it records the failure, the background processor tries again (as many times as the attempts settings
+     * allow), "Delete entries after Webhooks" leaves the entry alone, and a webhook sent again from the entry's page
+     * reports it. Until 2.3.0 the failure was an exception thrown from gform_webhooks_post_request, and since Gravity
+     * Forms 3.0.2 its gf_do_action() catches exceptions from hooks and only re-throws them when WP_DEBUG is on. So on a
+     * live site every failure CiviCRM answered was recorded as a success, never retried, and with "Delete entries"
+     * on, the entry was deleted; only the failure email went out.
+     */
+    public static function check_civicrm_response(mixed $response, mixed $args = [], mixed $url = ''): mixed
+    {
+        if (!is_array($args) || empty($args[self::CHECK]) || !is_array($response)) {
+            return $response;
+        }
+        return self::civicrm_failure($response) ?? $response;
+    }
+
+    /**
+     * What is wrong with CiviCRM's answer to a webhook, or null when it is a success: an HTTP status other than 200,
+     * an answer that isn't a JSON object, or a CiviCRM API (v3 or v4) or Form Processor error.
+     */
+    public static function civicrm_failure(array $response): ?WP_Error
+    {
+        $code = (int) wp_remote_retrieve_response_code($response);
+        if ($code !== 200) { // CiviCRM answers 200 when it succeeds
+            return self::failure('http_status', sprintf(__('The server answered with HTTP %d.', 'gravityforms-civicrm-form-processor'), $code),
+                'Post Webhook Failed: $response[response][code] !== 200',
+                'Invalid HTTP Status Code: Sending data to CiviCRM failed with an invalid return code.', $response);
+        }
+        $notJson = __('The answer was not JSON, so CiviCRM did not handle it (check the webhook\'s URL and request format).', 'gravityforms-civicrm-form-processor');
+        $notJsonEmail = 'Response Was Not JSON: Sending data to CiviCRM failed with a return payload that was not valid JSON. Verify the GET or POST parameters contain a \'json\' key.';
+        try {
+            $data = json_decode((string) wp_remote_retrieve_body($response), true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            return self::failure('not_json', $notJson, 'Post Webhook: $response[body] is not JSON', $notJsonEmail, $response);
+        }
+        // JSON, but not an object (0, null, "ok"): not an answer from CiviCRM's API either.
+        if (!is_array($data)) {
+            return self::failure('not_json', $notJson, 'Post Webhook: $response[body] is not a JSON object', $notJsonEmail, $response, $data);
+        }
+        if (!empty($data['is_error']) || array_key_exists('error_code', $data)) {
+            $civi = $data['error_message'] ?? $data['error_code'] ?? '';
+            return self::failure('api_error', sprintf(__('CiviCRM reported an error: %s', 'gravityforms-civicrm-form-processor'), is_scalar($civi) ? (string) $civi : wp_json_encode($civi)),
+                'Post Webhook Failed: $responseData[is_error] || array_key_exists(error_code, $responseData)',
+                'CiviCRM API Returned an Error: The CiviCRM API returned an error message. Verify all required field are submitted and contain valid data.', $response, $data);
+        }
+        return null;
+    }
+
+    /** A failed answer, as check_civicrm_response() returns it. */
+    private static function failure(string $kind, string $message, string $header, string $email, array $response, mixed $data = null): WP_Error
+    {
+        return new WP_Error(self::FAILURE . $kind, $message, ['response' => $response, 'response_data' => $data, 'header' => $header, 'email' => $email]);
+    }
+
+    /**
+     * After a webhook's request (gform_webhooks_post_request): when it failed, log it and send the failure email, if
+     * the webhook has one. A failure arrives as a WP_Error: from WordPress when the request got no answer, or from
+     * check_civicrm_response() when CiviCRM's answer was a failure. Nothing is thrown (see check_civicrm_response()).
+     */
     public static function after_webhook_actions($response, $feed, $entry, $form): void
     {
-        /**
-         * Check for Errors
-         * Feeds are processed in a try block: GF_Feed_Processor::task
-         * If you throw an exception, it will be queued for retry
-         */
-
-        // Some form DNS Error
-        if (is_wp_error($response)) {
-            $msg = 'Post Webhook Failed: is_wp_error( $response )';
-            static::log_variables($msg, $response, $feed, $entry, $form);
-            static::send_failed_webhook_email($msg, 'Network Error: Sending data to CiviCRM failed with a possible network error.', $response, $feed, $entry, $form);
-            throw new Exception($msg);
+        if (!is_wp_error($response)) {
+            return;
         }
-
-        // Some form of HTTP Error
-        if ($response['response']['code'] !== 200) { // I think CiviCRM always returns 200 for success
-            $msg = 'Post Webhook Failed: $response[response][code] !== 200';
-            static::log_variables($msg, $response, $feed, $entry, $form);
-            static::send_failed_webhook_email($msg, 'Invalid HTTP Status Code: Sending data to CiviCRM failed with an invalid return code.', $response, $feed, $entry, $form);
-            throw new Exception($msg);
+        $data = $response->get_error_data();
+        if (str_starts_with((string) $response->get_error_code(), self::FAILURE) && is_array($data)) {
+            static::log_variables($data['header'], $data['response'], $feed, $entry, $form, $data['response_data']);
+            static::send_failed_webhook_email($data['header'], $data['email'], $data['response'], $feed, $entry, $form, $data['response_data']);
+            return;
         }
-
-        // Response not JSON
-        try {
-            $responseData = json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR);
-        } catch (JsonException $e) {
-            $msg = 'Post Webhook: $response[body] is not JSON';
-            static::log_variables($msg, $response, $feed, $entry, $form);
-            static::send_failed_webhook_email($msg, 'Response Was Not JSON: Sending data to CiviCRM failed with a return payload that was not valid JSON. Verify the GET or POST parameters contain a \'json\' key.', $response, $feed, $entry, $form);
-            throw new Exception($msg);
-        }
-
-        // CiviCRM API (v3 or v4) or Form Processor Error Error
-        $api3Error = $responseData['is_error'] ?? false;
-        $api4Error = array_key_exists('error_code', $responseData);
-        if ($api3Error || $api4Error) {
-            $msg = 'Post Webhook Failed: $responseData[is_error] || array_key_exists(error_code, $responseData)';
-            static::log_variables($msg, $response, $feed, $entry, $form, $responseData);
-            static::send_failed_webhook_email($msg, 'CiviCRM API Returned an Error: The CiviCRM API returned an error message. Verify all required field are submitted and contain valid data.', $response, $feed, $entry, $form, $responseData);
-            throw new Exception($msg);
-        }
-
-        /**
-         * Success or at least no error detected
-         */
+        // No answer at all: DNS, a refused connection, a timeout.
+        $msg = 'Post Webhook Failed: is_wp_error( $response )';
+        static::log_variables($msg, $response, $feed, $entry, $form);
+        static::send_failed_webhook_email($msg, 'Network Error: Sending data to CiviCRM failed with a possible network error.', $response, $feed, $entry, $form);
     }
 
     protected static function log_variables($msg, ...$vars): void

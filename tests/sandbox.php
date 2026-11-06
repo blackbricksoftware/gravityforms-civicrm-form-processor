@@ -77,6 +77,48 @@ add_filter(
 	3
 );
 
+// No email leaves the sandbox: each one is appended to wp-content/gfcfp-mail.jsonl (to, subject, message) instead, so
+// run.sh can check this plugin's webhook failure emails.
+add_filter(
+	'pre_wp_mail',
+	function ( $return, $atts ) {
+		file_put_contents( WP_CONTENT_DIR . '/gfcfp-mail.jsonl', wp_json_encode( array( 'to' => $atts['to'], 'subject' => $atts['subject'], 'message' => $atts['message'] ) ) . "\n", FILE_APPEND );
+		return true;
+	},
+	10,
+	2
+);
+
+// Records each time Gravity Forms' pre-feed form filter runs, as "<form id> <entry id>" in wp-content/gfcfp-probe.log,
+// so run.sh can check that a webhook sent again gets it, as one sent in the background does.
+add_filter(
+	'gform_form_pre_process_async_task',
+	function ( $form, $entry ) {
+		file_put_contents( WP_CONTENT_DIR . '/gfcfp-probe.log', ( $form['id'] ?? '?' ) . ' ' . ( $entry['id'] ?? '?' ) . "\n", FILE_APPEND );
+		return $form;
+	},
+	10,
+	2
+);
+
+// A site's own feed filter: webhooks named "Skip: ..." are left out, as gform_addon_pre_process_feeds and its
+// relatives let a site do. And a payment add-on's delay: an entry whose first field is "Unpaid" waits for its payment,
+// as gform_is_delayed_pre_process_feed lets PayPal and the like do. run.sh checks a webhook sent again respects both.
+add_filter(
+	'gform_gravityformswebhooks_pre_process_feeds',
+	function ( $feeds ) {
+		return is_array( $feeds ) ? array_values( array_filter( $feeds, function ( $feed ) { return 0 !== strpos( (string) ( $feed['meta']['feedName'] ?? '' ), 'Skip:' ); } ) ) : $feeds;
+	}
+);
+add_filter(
+	'gform_is_delayed_pre_process_feed',
+	function ( $delayed, $form, $entry ) {
+		return 'Unpaid' === ( $entry['1'] ?? '' ) ? true : $delayed;
+	},
+	10,
+	3
+);
+
 // Page loads don't start WP-Cron, whose own update check could land in the middle of a check run.sh is counting.
 if ( ! defined( 'DISABLE_WP_CRON' ) ) {
 	define( 'DISABLE_WP_CRON', true );

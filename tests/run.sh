@@ -72,7 +72,7 @@ define( 'DB_NAME', 'wp' ); define( 'DB_USER', 'u' ); define( 'DB_PASSWORD', 'p' 
 define( 'DB_CHARSET', 'utf8' ); define( 'DB_COLLATE', '' );
 define( 'AUTH_KEY', 'sandbox' ); define( 'SECURE_AUTH_KEY', 'sandbox' ); define( 'LOGGED_IN_KEY', 'sandbox' ); define( 'NONCE_KEY', 'sandbox' );
 define( 'AUTH_SALT', 'sandbox' ); define( 'SECURE_AUTH_SALT', 'sandbox' ); define( 'LOGGED_IN_SALT', 'sandbox' ); define( 'NONCE_SALT', 'sandbox' );
-define( 'WP_DEBUG', true ); define( 'WP_DEBUG_LOG', true ); define( 'WP_DEBUG_DISPLAY', false );
+define( 'WP_DEBUG', ! file_exists( __DIR__ . '/wp-content/gfcfp-debug-off' ) ); define( 'WP_DEBUG_LOG', true ); define( 'WP_DEBUG_DISPLAY', false );
 define( 'FS_METHOD', 'direct' );
 $table_prefix = 'wp_';
 if ( ! defined( 'ABSPATH' ) ) { define( 'ABSPATH', __DIR__ . '/' ); }
@@ -80,6 +80,10 @@ require_once ABSPATH . 'wp-settings.php';
 EOF
   wpq core install --url="$BASE" --title=sandbox --admin_user=admin --admin_password=admin --admin_email=sandbox@example.com --skip-email
 fi
+# WP_DEBUG is on, except while wp-content/gfcfp-debug-off exists, as on a live site (a sandbox built before that was
+# possible gets the switch here).
+sed -i "s#define( 'WP_DEBUG', true );#define( 'WP_DEBUG', ! file_exists( __DIR__ . '/wp-content/gfcfp-debug-off' ) );#" "$WP/wp-config.php"
+rm -f "$WP/wp-content/gfcfp-debug-off"
 # The site's address follows this run's port (GFCFP_TEST_WP_PORT), not the first run's: WordPress redirects to its
 # address, and the auto-updater's after-update check loads it.
 wpq option update home "$BASE" > /dev/null; wpq option update siteurl "$BASE" > /dev/null
@@ -344,8 +348,11 @@ else
   trap 'kill $WPPID $CAPPID 2>/dev/null || true' EXIT
   wpq plugin install "$GFZIP" --force --activate > /dev/null; wpq plugin install "$WHZIP" --force --activate > /dev/null
   echo "     ($(basename "$GFZIP" .zip), $(basename "$WHZIP" .zip))"
-  # A form with two webhooks to the stand-in, one turned off; a second form with its own; and an entry, saved without
-  # running any feeds (GFAPI::add_entry), as if the webhook had failed or been off when it came in.
+  # The Webhooks add-on's background processor starts empty and unpaused: a run that stopped part-way can leave its
+  # batches, or its pause after a failed task, in the database (wp_gf_webhooks_feed_processor_*).
+  wpq eval 'global $wpdb; $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE \"wp_gf_webhooks_feed_processor%\"" );' > /dev/null
+  # A form with three webhooks to the stand-in, one of them turned off; a second form with its own; and an entry, saved
+  # without running any feeds (GFAPI::add_entry), as if the webhooks had failed or been off when it came in.
   IDS=$(wpq eval '
     $url = "http://127.0.0.1:'"$CAPPORT"'/civicrm/ajax/rest";
     $meta = function ( $name ) use ( $url ) { return array( "feedName" => $name, "requestURL" => $url, "requestMethod" => "POST", "requestFormat" => "json", "requestHeaders" => array(), "requestBodyType" => "all_fields", "feed_condition_conditional_logic" => false ); };
@@ -355,23 +362,28 @@ else
     $other_form = GFAPI::add_form( array( "title" => "Other form " . wp_generate_password( 6, false ), "fields" => array( array( "type" => "text", "id" => 1, "label" => "Name" ) ) ) );
     $other = GFAPI::add_feed( $other_form, $meta( "Other form webhook" ), "gravityformswebhooks" );
     $entry = GFAPI::add_entry( array( "form_id" => $form, "1" => "Ada", "2" => "ada@example.com" ) );
-    echo "$form $on $off $other $entry";' | tail -1)
-  read -r FORM FEED OFFFEED OTHERFEED ENTRY <<< "$IDS"
+    $also = GFAPI::add_feed( $form, array( "requestURL" => $url . "?who={user:user_login}" ) + $meta( "Also to CiviCRM" ), "gravityformswebhooks" );
+    echo "$form $on $off $other $entry $also";' | tail -1)
+  read -r FORM FEED OFFFEED OTHERFEED ENTRY ALSOFEED <<< "$IDS"
   # Gravity Forms loads its KLogger class only once something asks for a logger. This plugin's hooks can run first (a
   # webhook sent by another plugin, say), and until 2.2.0 their KLogger::DEBUG was then a fatal error.
   expect "this plugin logs fine before Gravity Forms has loaded its logger" \
     "$(wpq eval 'echo class_exists( "KLogger", false ) ? "loaded" : "not loaded", " "; \BlackBrickSoftware\GravityFormsCiviCRMFormProcessor\Log::debug( "probe" ); echo "logged";' | tail -1)" "not loaded logged"
   # Until 2.2.0 this was a fatal error: GFAPI::add_feed() builds the webhook settings, which called gform_tooltip().
-  if [[ "$IDS" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then pass "webhooks can be created outside wp-admin (GFAPI::add_feed from WP-CLI)"; else fail "webhooks can be created outside wp-admin ($IDS)"; fi
+  if [[ "$IDS" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then pass "webhooks can be created outside wp-admin (GFAPI::add_feed from WP-CLI)"; else fail "webhooks can be created outside wp-admin ($IDS)"; fi
   ENTRYPAGE="$BASE/wp-admin/admin.php?page=gf_entries&view=entry&id=$FORM&lid=$ENTRY"
   PAGE=$(curl -s -b "$JAR" "$ENTRYPAGE")
-  if grep -q 'id="gravityforms_civicrm_form_processor_webhooks"' <<< "$PAGE" && grep -q "<option value=\"$FEED\">To CiviCRM (not sent yet)</option>" <<< "$PAGE" && ! grep -q "<option value=\"$OFFFEED\"" <<< "$PAGE"; then
-    pass "the entry's page has a Webhooks box listing the form's active webhook, not the one turned off"; else fail "the entry's page has a Webhooks box listing the form's active webhook ($IDS)"; fi
+  BOXID=gravityforms_civicrm_form_processor_webhooks
+  if grep -q "id=\"$BOXID\"" <<< "$PAGE" && grep -q "<input type=\"checkbox\" value=\"$FEED\" id=\"${BOXID}_$FEED\" />" <<< "$PAGE" \
+    && grep -q "To CiviCRM <span class=\"description\" data-status=\"$FEED\">(not sent yet)</span>" <<< "$PAGE" && grep -q "value=\"$ALSOFEED\"" <<< "$PAGE" && ! grep -q "value=\"$OFFFEED\"" <<< "$PAGE"; then
+    pass "the entry's page has a Webhooks box with a checkbox for each active webhook, not the one turned off"; else fail "the entry's page has a Webhooks box with a checkbox for each active webhook ($IDS)"; fi
   NONCE=$(grep -o "data.append('nonce', \"[^\"]*\")" <<< "$PAGE" | head -1 | sed "s/.*, \"//; s/\")//")
-  # The box's request, as its Send button makes it.
-  resend() { curl -s -b "${4:-$JAR}" --data-urlencode "action=gravityforms_civicrm_form_processor_resend_webhook" --data-urlencode "nonce=${3:-$NONCE}" \
-    --data-urlencode "entry_id=$1" --data-urlencode "feed_id=$2" "$BASE/wp-admin/admin-ajax.php"; }
-  json() { "$PHP" -r '$j = json_decode( stream_get_contents( STDIN ), true ); echo is_array( $j ) ? ( $j["success"] ? "ok" : "error" ) . ": " . ( $j["data"]["message"] ?? "" ) : "not json: " . substr( (string) $j, 0, 80 );'; }
+  # The box's request, as its Send button makes it, for the ticked webhooks (a comma-separated list of ids).
+  resend() { local ticked=() id; for id in ${2//,/ }; do ticked+=(--data-urlencode "feed_ids[]=$id"); done
+    curl -s -b "${4:-$JAR}" --data-urlencode "action=gravityforms_civicrm_form_processor_resend_webhook" --data-urlencode "nonce=${3:-$NONCE}" \
+    --data-urlencode "entry_id=$1" "${ticked[@]}" "$BASE/wp-admin/admin-ajax.php"; }
+  # "ok: <each webhook's result, joined by | >", or "error: ..." when any failed.
+  json() { "$PHP" -r '$j = json_decode( stream_get_contents( STDIN ), true ); if ( ! is_array( $j ) ) { echo "not json: ", substr( (string) $j, 0, 80 ); exit; } $r = $j["data"]["results"] ?? null; echo $j["success"] ? "ok" : "error", ": ", is_array( $r ) ? implode( " | ", array_column( $r, "message" ) ) : ( $j["data"]["message"] ?? "" );'; }
   feed_status() { wpq eval '$s = gform_get_meta( '"$1"', "feed_'"$2"'_status" ); $l = is_array( $s ) ? end( $s ) : null; echo is_array( $l ) ? $l["status"] : "none", " ", in_array( '"$2"', GFAPI::get_processed_feeds_meta( '"$1"', "gravityformswebhooks" ) ) ? "processed" : "unprocessed";'; }
   notes() { wpq eval 'foreach ( GFAPI::get_notes( array( "entry_id" => '"$1"' ) ) as $n ) { echo $n->value, "\n"; }'; }
   sent() { wc -l < "$CAP/captured.jsonl" 2>/dev/null | tr -d ' ' || echo 0; }
@@ -383,17 +395,44 @@ else
   expect "  the entry's feed status says it succeeded, and Gravity Forms counts it as processed" "$(feed_status "$ENTRY" "$FEED")" "success processed"
   if notes "$ENTRY" | grep -q 'Webhook "To CiviCRM" sent again by admin.' && notes "$ENTRY" | grep -q 'Webhook sent. Response code: 200.'; then
     pass "  and the entry's notes say who sent it (and the Webhooks add-on's own note, with the response code)"; else fail "  the entry's notes"; notes "$ENTRY"; fi
-  if curl -s -b "$JAR" "$ENTRYPAGE" | grep -q "<option value=\"$FEED\">To CiviCRM (sent "; then pass "  and the box now shows when it was sent"; else fail "  and the box now shows when it was sent"; fi
+  if curl -s -b "$JAR" "$ENTRYPAGE" | grep -q "data-status=\"$FEED\">(sent "; then pass "  and the box now shows when it was sent"; else fail "  and the box now shows when it was sent"; fi
+  if grep -qx "$FORM $ENTRY" "$WP/wp-content/gfcfp-probe.log" 2>/dev/null; then
+    pass "  Gravity Forms' pre-feed form filter ran for it, as for a webhook sent in the background"; else fail "  Gravity Forms' pre-feed form filter ran for it (gform_form_pre_process_async_task)"; fi
+
+  # From here the webhook's failure email is on ("CiviCRM Webhook Failure Notification"). The sandbox keeps each email
+  # in wp-content/gfcfp-mail.jsonl instead of sending it.
+  MAIL="$WP/wp-content/gfcfp-mail.jsonl"
+  wpq eval '$f = GFAPI::get_feed( '"$FEED"' ); $m = $f["meta"]; $m["CiviCRMWebhookFailureNotification"] = "1"; $m["CiviCRMWebhookFailureNotificationTo"] = "alerts@example.com"; $m["CiviCRMWebhookFailureNotificationFrom"] = "wordpress@example.com"; $m["CiviCRMWebhookFailureNotificationFromName"] = "Sandbox"; $m["CiviCRMWebhookFailureNotificationSubject"] = "CiviCRM webhook failed"; GFAPI::update_feed( '"$FEED"', $m );' > /dev/null
+  : > "$MAIL"
+  # The newest email: "<to> | <subject> | <the reason this plugin gives>".
+  last_mail() { tail -1 "$MAIL" 2>/dev/null | "$PHP" -r '$m = json_decode( stream_get_contents( STDIN ), true ); if ( ! is_array( $m ) ) { echo "none"; exit; } preg_match( "/<p>(Network Error|Invalid HTTP Status Code|Response Was Not JSON|CiviCRM API Returned an Error)[^<]*<\/p>/", $m["message"], $r ); echo ( is_array( $m["to"] ) ? implode( ",", $m["to"] ) : $m["to"] ), " | ", $m["subject"], " | ", $r[1] ?? "?";'; }
+  mails() { grep -c . "$MAIL" 2>/dev/null || true; }
 
   echo '{"code":500,"body":"Internal Server Error"}' > "$CAP/answer.json"
-  expect "CiviCRM answers 500: the box says it failed, and why" "$(resend "$ENTRY" "$FEED" | json)" 'error: "To CiviCRM" failed: the server answered with HTTP 500.'
+  expect "CiviCRM answers 500: the box says it failed, and why" "$(resend "$ENTRY" "$FEED" | json)" 'error: "To CiviCRM" failed: The server answered with HTTP 500.'
   expect "  the feed status says failed" "$(feed_status "$ENTRY" "$FEED" | cut -d' ' -f1)" "failed"
-  if notes "$ENTRY" | grep -q 'Webhook "To CiviCRM" sent again by admin, and it failed: the server answered with HTTP 500.'; then pass "  and the entry's notes say so"; else fail "  and the entry's notes say so"; fi
+  if notes "$ENTRY" | grep -q 'Webhook "To CiviCRM" sent again by admin, and it failed: The server answered with HTTP 500.'; then pass "  and the entry's notes say so"; else fail "  and the entry's notes say so"; fi
+  expect "  and the failure email goes out, as for any failed webhook" "$(mails) $(last_mail)" "1 alerts@example.com | CiviCRM webhook failed | Invalid HTTP Status Code"
   echo '{"code":200,"body":"{\"is_error\":1,\"error_message\":\"Mandatory key(s) missing: contact_type\"}"}' > "$CAP/answer.json"
   expect "CiviCRM reports an API error: the box gives CiviCRM's message" "$(resend "$ENTRY" "$FEED" | json)" 'error: "To CiviCRM" failed: CiviCRM reported an error: Mandatory key(s) missing: contact_type'
+  expect "  and the failure email says so" "$(mails) $(last_mail)" "2 alerts@example.com | CiviCRM webhook failed | CiviCRM API Returned an Error"
   echo '{"code":200,"body":"<html>not json</html>"}' > "$CAP/answer.json"
-  expect "CiviCRM's answer isn't JSON: the box says so" "$(resend "$ENTRY" "$FEED" | json)" "error: \"To CiviCRM\" failed: the answer was not JSON, so CiviCRM did not handle it (check the webhook's URL and request format)."
+  expect "CiviCRM's answer isn't JSON: the box says so" "$(resend "$ENTRY" "$FEED" | json)" "error: \"To CiviCRM\" failed: The answer was not JSON, so CiviCRM did not handle it (check the webhook's URL and request format)."
+  expect "  and the failure email says so" "$(mails) $(last_mail)" "3 alerts@example.com | CiviCRM webhook failed | Response Was Not JSON"
+  # JSON, but not an object: until 2.3.0 a TypeError, with no failure email.
+  echo '{"code":200,"body":"0"}' > "$CAP/answer.json"
+  expect "CiviCRM's answer is JSON but not an object (0): a failure too, with its email" "$(resend "$ENTRY" "$FEED" | json) $(mails) $(last_mail)" "error: \"To CiviCRM\" failed: The answer was not JSON, so CiviCRM did not handle it (check the webhook's URL and request format). 4 alerts@example.com | CiviCRM webhook failed | Response Was Not JSON"
   rm -f "${CAP:?}/answer.json"
+  expect "a send that succeeds sends no failure email" "$(resend "$ENTRY" "$FEED" | json) $(mails)" 'ok: "To CiviCRM" was sent. 4'
+
+  : > "$CAP/captured.jsonl"
+  expect "two webhooks ticked: both go out, one after the other, each with its result" "$(resend "$ENTRY" "$FEED,$ALSOFEED" | json) $(sent)" 'ok: "To CiviCRM" was sent. | "Also to CiviCRM" was sent. 2'
+  expect "  one of them turned off: that one is refused, the other still goes out" "$(resend "$ENTRY" "$OFFFEED,$ALSOFEED" | json) $(sent)" "error: That webhook is turned off. Turn it on in the form's Webhooks settings first. | \"Also to CiviCRM\" was sent. 3"
+  expect "none ticked: nothing sent" "$(resend "$ENTRY" "" | json) $(sent)" "error: Tick at least one webhook to send. 3"
+  # {user:...} merge tags are the entry's own user, as when it was submitted, not the admin who pressed Send. This
+  # entry was saved by nobody, so "Also to CiviCRM"'s ?who={user:user_login} is empty.
+  if grep -q '"uri":"\\/civicrm\\/ajax\\/rest?who="' "$CAP/captured.jsonl" && ! grep -q 'who=admin' "$CAP/captured.jsonl"; then
+    pass "  sent as the entry's own user: its {user:...} merge tags aren't the admin's"; else fail "  sent as the entry's own user ({user:...} merge tags)"; grep -o '"uri":"[^"]*"' "$CAP/captured.jsonl"; fi
 
   : > "$CAP/captured.jsonl"
   expect "a webhook that is turned off: refused, nothing sent" "$(resend "$ENTRY" "$OFFFEED" | json) $(sent)" "error: That webhook is turned off. Turn it on in the form's Webhooks settings first. 0"
@@ -408,12 +447,69 @@ else
   ENONCE=$(LIC="$LIC" wpq eval '$_COOKIE[ LOGGED_IN_COOKIE ] = rawurldecode( getenv( "LIC" ) ); wp_set_current_user( get_user_by( "login", "gfcfp_editor2" )->ID ); echo wp_create_nonce( "gravityforms_civicrm_form_processor_resend_webhook" );' | tail -1)
   expect "a user who can't edit entries (an editor, with a valid nonce): refused, nothing sent" "$(resend "$ENTRY" "$FEED" "$ENONCE" "$EJAR" | json) $(sent)" "error: You are not allowed to send webhooks for entries. 0"
   wpq user delete gfcfp_editor2 --yes > /dev/null
+  # As Gravity Forms does: no webhooks for spam, none while a payment add-on is still waiting for the payment, and none
+  # that the site's own feed filters leave out (the sandbox leaves out webhooks named "Skip: ...").
+  EXTRA=$(wpq eval '$s = GFAPI::add_entry( array( "form_id" => '"$FORM"', "1" => "Spammy", "2" => "spam@example.com" ) ); GFAPI::update_entry_property( $s, "status", "spam" ); $u = GFAPI::add_entry( array( "form_id" => '"$FORM"', "1" => "Unpaid", "2" => "unpaid@example.com" ) ); $f = GFAPI::get_feed( '"$FEED"' ); $k = GFAPI::add_feed( '"$FORM"', array( "feedName" => "Skip: by a filter" ) + $f["meta"], "gravityformswebhooks" ); echo "$s $u $k";' | tail -1)
+  read -r SPAM UNPAID SKIPFEED <<< "$EXTRA"
+  expect "a spam entry: refused, nothing sent" "$(resend "$SPAM" "$FEED" | json) $(sent)" "error: This entry is marked as spam. Mark it as not spam first, which also sends its webhooks. 0"
+  expect "an entry waiting for its payment: refused, nothing sent" "$(resend "$UNPAID" "$FEED" | json) $(sent)" "error: \"To CiviCRM\" waits for this entry's payment: its webhooks are sent when the payment is received. 0"
+  expect "a webhook the site's feed filters leave out: not sent" "$(resend "$ENTRY" "$SKIPFEED" | json) $(sent)" "error: \"Skip: by a filter\" was not sent: a filter on this site (gform_addon_pre_process_feeds or similar) leaves it out for this entry. 0"
+  wpq eval 'GFAPI::update_feed_property( '"$SKIPFEED"', "is_active", 0 );' > /dev/null
 
-  # The form's "Delete entries after Webhooks are completed successfully" setting applies to a resend too.
+  # "Send webhooks again", the Entries list's bulk action, for two entries: queued as on submission, then sent by
+  # Gravity Forms' background processor (a request the site makes to itself after the bulk action's request ends).
+  BULK=$(wpq eval 'echo GFAPI::add_entry( array( "form_id" => '"$FORM"', "1" => "Bulk", "2" => "bulk-one@example.com" ) ), " ", GFAPI::add_entry( array( "form_id" => '"$FORM"', "1" => "Bulk", "2" => "bulk-two@example.com" ) );' | tail -1)
+  read -r BULK1 BULK2 <<< "$BULK"
+  LISTURL="$BASE/wp-admin/admin.php?page=gf_entries&id=$FORM"
+  LIST=$(curl -s -b "$JAR" "$LISTURL")
+  if grep -q '<option value="gravityforms_civicrm_form_processor_resend_webhooks">Send webhooks again</option>' <<< "$LIST" && grep -q 'window.confirm' <<< "$LIST"; then
+    pass "the Entries list has a \"Send webhooks again\" bulk action, which asks first"; else fail "the Entries list has a \"Send webhooks again\" bulk action"; fi
+  LNONCE=$(grep -o 'name="gforms_entry_list" value="[^"]*"' <<< "$LIST" | head -1 | sed 's/.*value="//; s/"//')
+  : > "$CAP/captured.jsonl"
+  OUT=$(curl -s -b "$JAR" --data-urlencode "gforms_entry_list=$LNONCE" --data-urlencode "action=gravityforms_civicrm_form_processor_resend_webhooks" --data-urlencode "action2=-1" \
+    --data-urlencode "entry[]=$BULK1" --data-urlencode "entry[]=$BULK2" --data-urlencode "all_entries=" "$LISTURL")
+  if grep -q 'The webhooks of 2 entries are queued to be sent again' <<< "$OUT"; then pass "  applied to two entries: the list says they are queued"; else fail "  applied to two entries: the list says they are queued"; fi
+  for _ in $(seq 60); do [ "$(sent)" -ge 4 ] && break; sleep 0.5; done
+  if [ "$(sent)" -lt 4 ]; then
+    echo "     (the background request hadn't run; running Gravity Forms' processor directly)"
+    wpq eval 'gf_feed_processor( GF_Webhooks::get_instance() )->handle_cron_healthcheck();' > /dev/null
+    for _ in $(seq 30); do [ "$(sent)" -ge 4 ] && break; sleep 0.5; done
+  fi
+  if [ "$(sent)" = 4 ] && [ "$(grep -c 'bulk-one@example.com' "$CAP/captured.jsonl")" = 2 ] && [ "$(grep -c 'bulk-two@example.com' "$CAP/captured.jsonl")" = 2 ]; then
+    pass "  Gravity Forms sent both entries' two active webhooks in the background"; else fail "  Gravity Forms sent both entries' two active webhooks in the background ($(sent) requests)"; fi
+  expect "  each feed status says it succeeded" "$(feed_status "$BULK1" "$FEED"), $(feed_status "$BULK1" "$ALSOFEED"), $(feed_status "$BULK2" "$FEED"), $(feed_status "$BULK2" "$ALSOFEED")" "success processed, success processed, success processed, success processed"
+  if notes "$BULK1" | grep -q 'Webhooks queued to be sent again by admin.' && notes "$BULK2" | grep -q 'Webhooks queued to be sent again by admin.'; then pass "  and each entry's notes say who queued them"; else fail "  and each entry's notes say who queued them"; fi
+
+  # The form's "Delete entries after Webhooks are completed successfully" setting applies to a resend too: once both of
+  # the form's active webhooks have succeeded, the entry goes, and the box says so.
   ENTRY2=$(wpq eval '$f = GFAPI::get_form( '"$FORM"' ); $f["CiviCRMDeleteEntries"] = true; GFAPI::update_form( $f ); echo GFAPI::add_entry( array( "form_id" => '"$FORM"', "1" => "Grace", "2" => "grace@example.com" ) );' | tail -1)
-  OUT=$(resend "$ENTRY2" "$FEED" | json)
-  if [ "${OUT#ok: }" != "$OUT" ] && grep -q 'has now been deleted' <<< "$OUT" && [ "$(wpq eval 'echo is_wp_error( GFAPI::get_entry( '"$ENTRY2"' ) ) ? "gone" : "kept";')" = gone ]; then
-    pass "with \"Delete entries after Webhooks\" on: sent, the entry deleted, and the box says so"; else fail "with \"Delete entries after Webhooks\" on ($OUT)"; fi
+  OUT=$(resend "$ENTRY2" "$FEED,$ALSOFEED" | json)
+  if [ "${OUT#ok: }" != "$OUT" ] && grep -q '"To CiviCRM" was sent. | "Also to CiviCRM" was sent. The entry has now been deleted' <<< "$OUT" && [ "$(wpq eval 'echo is_wp_error( GFAPI::get_entry( '"$ENTRY2"' ) ) ? "gone" : "kept";')" = gone ]; then
+    pass "with \"Delete entries after Webhooks\" on: both sent, then the entry deleted, and the box says so"; else fail "with \"Delete entries after Webhooks\" on ($OUT)"; fi
+
+  # As on a live site, with WP_DEBUG off, and "Delete entries after Webhooks" still on. Until 2.3.0 a failure CiviCRM
+  # answered (a 403, say) was an exception thrown from a hook, which Gravity Forms 3.0.2 and later swallow unless
+  # WP_DEBUG is on: the webhook was recorded as sent, never retried, and the entry deleted. Sent again by hand, and
+  # sent in the background as a submission's are, a 403 must now be a failure, and the entry must stay.
+  touch "$WP/wp-content/gfcfp-debug-off"
+  echo '{"code":403,"body":"Forbidden"}' > "$CAP/answer.json"
+  PROD=$(wpq eval 'echo GFAPI::add_entry( array( "form_id" => '"$FORM"', "1" => "Prod", "2" => "prod-one@example.com" ) ), " ", GFAPI::add_entry( array( "form_id" => '"$FORM"', "1" => "Prod", "2" => "prod-two@example.com" ) );' | tail -1)
+  read -r PROD1 PROD2 <<< "$PROD"
+  kept() { wpq eval 'echo is_wp_error( GFAPI::get_entry( '"$1"' ) ) ? "deleted" : "kept";'; }
+  expect "WP_DEBUG off, CiviCRM answers 403, sent again by hand: a failure, and the entry stays" "$(resend "$PROD1" "$FEED" | json) $(feed_status "$PROD1" "$FEED") $(kept "$PROD1")" "error: \"To CiviCRM\" failed: The server answered with HTTP 403. failed unprocessed kept"
+  : > "$CAP/captured.jsonl"; : > "$MAIL"
+  wpq eval '$e = GFAPI::get_entry( '"$PROD2"' ); GFAPI::maybe_process_feeds( $e, GFAPI::get_form( '"$FORM"' ), "gravityformswebhooks" );' > /dev/null
+  for _ in $(seq 40); do [ "$(sent)" -ge 2 ] && break; sleep 0.5; done
+  [ "$(sent)" -ge 2 ] || { wpq eval 'gf_feed_processor( GF_Webhooks::get_instance() )->handle_cron_healthcheck();' > /dev/null; for _ in $(seq 30); do [ "$(sent)" -ge 2 ] && break; sleep 0.5; done; }
+  # Gravity Forms keeps a failed task for another attempt and pauses its processor (GF_Background_Process::handle()),
+  # so the entry's second webhook waits for the next run: its status is none yet, and the batch is still queued.
+  queued() { wpq eval 'global $wpdb; echo $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE \"wp_gf_webhooks_feed_processor_batch_%\"" ) > 0 ? "queued for retry" : "not queued";'; }
+  expect "WP_DEBUG off, CiviCRM answers 403, sent in the background as on submission: a failure, kept for retry, the entry stays" \
+    "$(feed_status "$PROD2" "$FEED"), $(feed_status "$PROD2" "$ALSOFEED"), $(kept "$PROD2"), $(queued)" "failed unprocessed, none unprocessed, kept, queued for retry"
+  expect "  and the failure email went out" "$(mails) $(last_mail)" "1 alerts@example.com | CiviCRM webhook failed | Invalid HTTP Status Code"
+  if notes "$PROD2" | grep -q 'Webhook was not successfully executed. The server answered with HTTP 403.'; then pass "  and the entry's notes say why"; else fail "  and the entry's notes say why"; notes "$PROD2"; fi
+  rm -f "${CAP:?}/answer.json" "$WP/wp-content/gfcfp-debug-off"
+  wpq eval 'global $wpdb; $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE \"wp_gf_webhooks_feed_processor%\"" );' > /dev/null
 
   wpq plugin deactivate gravityformswebhooks > /dev/null
   code=$(curl -s -b "$JAR" -o "$SB/page.html" -w "%{http_code}" "$ENTRYPAGE")
