@@ -19,7 +19,6 @@ set -euo pipefail
 
 SLUG=gravityforms-civicrm-form-processor
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PHP_BIN="${PHP_BIN:-$(command -v php8.2 || command -v php || echo php)}"
 cd "$ROOT"
 
 # What ships, besides vendor/ (step 5). Everything else in the repository (tests, CI, composer files, the README's
@@ -41,6 +40,20 @@ if [ -n "${1:-}" ] && [ "$1" != "v$VERSION" ]; then
   die "asked to build $1, but the plugin header says $VERSION"
 fi
 echo "== $SLUG $VERSION"
+
+# One minimum PHP everywhere. The header's Requires PHP is what WordPress enforces; composer.json's require.php is what
+# composer enforces; config.platform.php is the PHP its dependencies are resolved for; and the lint below must run on
+# it. They must all name the same major.minor, or a release could claim one minimum while it, or its dependencies,
+# need another. (Lint only catches syntax a version can't parse, not functions it lacks.)
+mm() { sed -nE 's/^[^0-9]*([0-9]+\.[0-9]+).*/\1/p' <<< "$1"; }
+PHP_MIN=$(mm "$(sed -n 's/^ \* Requires PHP: *\([0-9][0-9.]*\) *$/\1/p' "$SLUG.php")")
+[ -n "$PHP_MIN" ] || die "the $SLUG.php header needs a Requires PHP: x.y line"
+REQUIRE_PHP=$(php -r '$c = json_decode(file_get_contents("composer.json"), true); echo $c["require"]["php"] ?? "";')
+PLATFORM_PHP=$(php -r '$c = json_decode(file_get_contents("composer.json"), true); echo $c["config"]["platform"]["php"] ?? "";')
+[ "$(mm "$REQUIRE_PHP")" = "$PHP_MIN" ] || die "composer.json requires php '$REQUIRE_PHP', but the header says Requires PHP: $PHP_MIN"
+[ "$(mm "$PLATFORM_PHP")" = "$PHP_MIN" ] || die "composer.json's config.platform.php is '$PLATFORM_PHP', but the header says Requires PHP: $PHP_MIN"
+PHP_BIN="${PHP_BIN:-$(command -v "php$PHP_MIN" || command -v php || echo php)}"
+echo "== PHP $PHP_MIN minimum: header, composer.json and its platform agree"
 # composer reads the root package's version from git, and the staged copy (step 5) has no .git. Tell it instead.
 export COMPOSER_ROOT_VERSION="$VERSION"
 
@@ -89,11 +102,11 @@ rm "dist/$SLUG/composer.json" "dist/$SLUG/composer.lock"
 found=$(find "dist/$SLUG/vendor" -type d \( -name tests -o -name Tests \) -print -quit)
 [ -z "$found" ] || die "a dependency's tests/ directory would ship: $found"
 
-# 6. Every shipped PHP file parses on PHP 8.2.
+# 6. Every shipped PHP file parses on the minimum PHP (Requires PHP).
 command -v "$PHP_BIN" >/dev/null || die "no php found (set PHP_BIN)"
 lint_version=$("$PHP_BIN" -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')
-if [ "$lint_version" != "8.2" ] && [ "${LINT_ANY_PHP:-}" != "1" ]; then
-  die "$PHP_BIN is PHP $lint_version; lint needs 8.2, the oldest version the plugin supports (set PHP_BIN, or LINT_ANY_PHP=1 for a build that will not be released)"
+if [ "$lint_version" != "$PHP_MIN" ] && [ "${LINT_ANY_PHP:-}" != "1" ]; then
+  die "$PHP_BIN is PHP $lint_version; lint needs $PHP_MIN, the header's Requires PHP (set PHP_BIN, or LINT_ANY_PHP=1 for a build that will not be released)"
 fi
 echo "== lint: $("$PHP_BIN" -r 'echo "PHP ", PHP_VERSION;')"
 # vendor/ holds over a thousand files and PHP 8.2 lints one per run, so several run at once.
