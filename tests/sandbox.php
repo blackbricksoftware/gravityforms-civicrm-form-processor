@@ -154,8 +154,9 @@ add_filter(
 		if ( 'api.wordpress.org' === $host && 0 === strpos( $path, '/core/version-check/' ) ) {
 			return $answer( 200, wp_json_encode( array( 'offers' => array(), 'translations' => array() ) ) );
 		}
-		// Gravity Forms' own calls home (version and licence checks), when it is installed for the webhook checks.
-		if ( preg_match( '/(^|\.)(gravityapi|gravityforms|gravityhelp|rocketgenius)\.com$/', $host ) ) {
+		// Gravity Forms' own calls home (version and licence checks), when it is installed for the webhook checks, except
+		// while run.sh downloads it with a licence key (GFCFP_ALLOW_GF_API).
+		if ( ! getenv( 'GFCFP_ALLOW_GF_API' ) && preg_match( '/(^|\.)(gravityapi|gravityforms|gravityhelp|rocketgenius)\.com$/', $host ) ) {
 			return new WP_Error( 'http_request_failed', 'sandbox: no calls to Gravity Forms\' servers' );
 		}
 		if ( ! $mode ) {

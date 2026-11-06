@@ -54,12 +54,21 @@ jobs:
         run: bin/build.sh ${{ github.ref_type == 'tag' && github.ref_name || '' }}
 
       - name: Test the zip in a throwaway WordPress
-        run: tests/run.sh
+        run: |
+          # Gravity Forms puts a hash of the licence key in its download addresses. GitHub masks the key itself in this
+          # log, which is public; this masks the hash too.
+          [ -z "$GFCFP_TEST_GF_KEY" ] || echo "::add-mask::$(printf %s "$GFCFP_TEST_GF_KEY" | md5sum | cut -d' ' -f1)"
+          tests/run.sh
         env:
           GFCFP_TEST_ZIP: ${{ steps.build.outputs.zip }}
           # Only for the test's own lookups of the newest release (the plugin itself never sends a token), so they
           # don't share GitHub's anonymous rate limit.
           GFCFP_TEST_GITHUB_TOKEN: ${{ github.token }}
+          # The newest Gravity Forms and Webhooks add-on, downloaded with this key, for the checks of sending webhooks
+          # again and of how a failed webhook is handled. GitHub gives no secrets to pull requests from forks, so they
+          # skip those checks; pushes and tags require them, so no release goes out without them.
+          GFCFP_TEST_GF_KEY: ${{ secrets.GRAVITY_FORMS_LICENSE_KEY }}
+          GFCFP_TEST_GF_REQUIRED: ${{ github.event_name != 'pull_request' && '1' || '' }}
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

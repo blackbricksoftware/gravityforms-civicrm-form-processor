@@ -1,3 +1,5 @@
 /vendor
 /dist/
 /.sandbox/
+/.working/
+/gravity_license_key

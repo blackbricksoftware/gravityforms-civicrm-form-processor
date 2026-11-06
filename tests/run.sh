@@ -116,7 +116,7 @@ if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && grep -q "^ \* Update URI: htt
 # Start from no copy of the plugin at all: a run that stopped part-way can leave one in any folder (and the Gravity
 # Forms stand-in on).
 rm -rf "$WP/wp-content/gfcfp-gf-stub"
-for d in gravityformswebhooks gravityforms; do [ -e "$PLUGINS/$d" ] && { wpq plugin deactivate "$d" > /dev/null; rm -rf "${PLUGINS:?}/$d"; }; done
+for d in gravityformswebhooks gravityforms gravityformscli; do [ -e "$PLUGINS/$d" ] && { wpq plugin deactivate "$d" > /dev/null; rm -rf "${PLUGINS:?}/$d"; }; done
 for d in "$PLUGINS"/*civicrm* "$PLUGINS"/*CiviCRM*; do
   [ -e "$d" ] || continue
   wpq plugin deactivate "$(basename "$d")" > /dev/null; rm -rf "$d"
@@ -333,21 +333,49 @@ else
 fi
 
 echo; echo "-- sending a webhook again from an entry's page (with Gravity Forms and its Webhooks add-on)"
-# Gravity Forms isn't free, so this runs only when GFCFP_TEST_GF_DIR names a folder holding gravityforms_*.zip and
-# gravityformswebhooks_*.zip (a licensed copy; CI has none). The webhooks go to tests/capture.php, a stand-in for
-# CiviCRM's REST endpoint on its own port, which answers as CiviCRM does unless told otherwise.
+# Gravity Forms isn't free. It comes from GFCFP_TEST_GF_DIR, a folder holding gravityforms_*.zip and
+# gravityformswebhooks_*.zip (a licensed copy), or else it is downloaded with GFCFP_TEST_GF_KEY, a Gravity Forms licence
+# key (CI passes the repository's secret), through Gravity Forms' own CLI add-on, so it is always the newest. Without
+# either, these checks are skipped, unless GFCFP_TEST_GF_REQUIRED=1: CI sets that on pushes and tags, so nothing is
+# released without them. The webhooks go to tests/capture.php, a stand-in for CiviCRM's REST endpoint on its own port,
+# which answers as CiviCRM does unless told otherwise.
 GFZIP=$(ls "${GFCFP_TEST_GF_DIR:-/nonexistent}"/gravityforms_[0-9]*.zip 2>/dev/null | sort -V | tail -1)
 WHZIP=$(ls "${GFCFP_TEST_GF_DIR:-/nonexistent}"/gravityformswebhooks_[0-9]*.zip 2>/dev/null | sort -V | tail -1)
-if [ -z "$GFZIP" ] || [ -z "$WHZIP" ]; then
-  echo "SKIP sending a webhook again (set GFCFP_TEST_GF_DIR to a folder with gravityforms_*.zip and gravityformswebhooks_*.zip)"
+# Locally, the key can sit in the git-ignored file gravity_license_key at the repository's root instead.
+[ -n "${GFCFP_TEST_GF_KEY:-}" ] || GFCFP_TEST_GF_KEY=$(cat "$ROOT/gravity_license_key" 2>/dev/null || true)
+GF_FROM=""
+if [ -n "$GFZIP" ] && [ -n "$WHZIP" ]; then
+  wpq plugin install "$GFZIP" --force --activate > /dev/null; wpq plugin install "$WHZIP" --force --activate > /dev/null
+  GF_FROM="from $(basename "$GFZIP"), $(basename "$WHZIP")"
+elif [ -n "${GFCFP_TEST_GF_KEY:-}" ]; then
+  # Nothing these commands print is shown: Gravity Forms' download addresses carry a hash of the key, and a public
+  # repository's CI logs are public. (The workflow also masks that hash.) The sandbox lets these, and only these, reach
+  # Gravity Forms' servers.
+  wpq plugin install gravityformscli --force --activate > /dev/null
+  for slug in gravityforms gravityformswebhooks; do
+    GFCFP_ALLOW_GF_API=1 wp --path="$WP" gf install "$slug" --key="$GFCFP_TEST_GF_KEY" --force --activate > /dev/null 2>&1 || true
+  done
+  GF_FROM="downloaded with the licence key"
+fi
+GF_READY=""
+if [ -n "$GF_FROM" ] && [ "$(wpq plugin get gravityforms --field=status)" = active ] && [ "$(wpq plugin get gravityformswebhooks --field=status)" = active ]; then
+  GF_READY=1
+fi
+if [ "$GF_READY" != 1 ]; then
+  if [ -n "$GF_FROM" ]; then
+    fail "Gravity Forms and its Webhooks add-on could not be installed ($GF_FROM; for a key, check it is current and covers the Webhooks add-on)"
+  elif [ "${GFCFP_TEST_GF_REQUIRED:-}" = 1 ]; then
+    fail "the checks with Gravity Forms are required here (GFCFP_TEST_GF_REQUIRED=1), but neither GFCFP_TEST_GF_DIR nor GFCFP_TEST_GF_KEY was given"
+  else
+    echo "SKIP sending a webhook again (set GFCFP_TEST_GF_DIR to a folder with gravityforms_*.zip and gravityformswebhooks_*.zip, or GFCFP_TEST_GF_KEY to a licence key)"
+  fi
 else
   CAP="$SB/capture"; CAPPORT="${GFCFP_TEST_CAPTURE_PORT:-8091}"
   mkdir -p "$CAP" && rm -f "${CAP:?}/answer.json" "${CAP:?}/captured.jsonl" && cp "$T/capture.php" "$CAP/"
   (cd "$CAP" && CAPTURE_DIR="$CAP" exec "$PHP" -S "127.0.0.1:$CAPPORT" capture.php > "$SB/capture-server.log" 2>&1) &
   CAPPID=$!
   trap 'kill $WPPID $CAPPID 2>/dev/null || true' EXIT
-  wpq plugin install "$GFZIP" --force --activate > /dev/null; wpq plugin install "$WHZIP" --force --activate > /dev/null
-  echo "     ($(basename "$GFZIP" .zip), $(basename "$WHZIP" .zip))"
+  echo "     (Gravity Forms $(wpq plugin get gravityforms --field=version) and Webhooks $(wpq plugin get gravityformswebhooks --field=version), $GF_FROM)"
   # The Webhooks add-on's background processor starts empty and unpaused: a run that stopped part-way can leave its
   # batches, or its pause after a failed task, in the database (wp_gf_webhooks_feed_processor_*).
   wpq eval 'global $wpdb; $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE \"wp_gf_webhooks_feed_processor%\"" );' > /dev/null
@@ -515,8 +543,10 @@ else
   code=$(curl -s -b "$JAR" -o "$SB/page.html" -w "%{http_code}" "$ENTRYPAGE")
   if [ "$code" = 200 ] && ! grep -q 'gravityforms_civicrm_form_processor_webhooks' "$SB/page.html" && ! grep -q 'critical error' "$SB/page.html"; then
     pass "without the Webhooks add-on: no box, and the entry's page still works"; else fail "without the Webhooks add-on ($code)"; fi
-  wpq plugin deactivate gravityforms > /dev/null
-  rm -rf "${PLUGINS:?}/gravityforms" "${PLUGINS:?}/gravityformswebhooks"
+  wpq plugin deactivate gravityforms gravityformscli > /dev/null
+  rm -rf "${PLUGINS:?}/gravityforms" "${PLUGINS:?}/gravityformswebhooks" "${PLUGINS:?}/gravityformscli"
+  # The CLI add-on saves the licence key in Gravity Forms' settings; it doesn't stay in the sandbox.
+  wpq option delete rg_gforms_key > /dev/null
   kill "$CAPPID" 2>/dev/null || true
   trap 'kill $WPPID 2>/dev/null || true' EXIT
 fi
