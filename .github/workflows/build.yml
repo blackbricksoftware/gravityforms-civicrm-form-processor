@@ -1,0 +1,132 @@
+# Builds the release zip on pushes to master, on pull requests and on v*.*.* tags, tests it inside a real WordPress on
+# PHP 8.2 (the oldest the plugin supports), and on a tag publishes it to that tag's GitHub release.
+#
+# The release asset is what sites update from: the plugin's updater picks the newest release's
+# gravityforms-civicrm-form-processor-vX.Y.Z.zip, and sites with auto-updates on install it unattended. So a release
+# only exists once the zip has passed the end-to-end test, and the zip published is byte for byte the one the test
+# installed (its SHA-256 is taken as soon as it is built and checked before publishing), not a rebuild. For the same
+# reason every action is pinned to a commit rather than a tag, which its owner could move, and composer (which writes
+# the zip's autoloader) and WP-CLI to exact versions. To update one, look up the new release (its commit, for an action)
+# and change the version and the comment beside it. PHP itself is the newest 8.2 patch release.
+#
+# Tags must be on commits that have this file. A tag on a commit from before 2.1.0 runs that commit's old release.yml,
+# which would publish a zip the updater can't use as Latest.
+name: Build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*.*.*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Bash with pipefail for every step, so a failing command inside a pipeline fails the step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      sha256: ${{ steps.build.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.2'
+          extensions: pdo_sqlite, sqlite3, zip
+          tools: composer:2.11.1, wp-cli:2.12.0
+          coverage: none
+
+      - name: Build the release zip
+        id: build
+        # On a tag, the build fails unless the plugin's version is the tag's. Its sha256 output is fixed when this step
+        # ends, before the test step runs code downloaded at test time (WordPress, its SQLite plugin).
+        run: bin/build.sh ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+
+      - name: Test the zip in a throwaway WordPress
+        run: tests/run.sh
+        env:
+          GFCFP_TEST_ZIP: ${{ steps.build.outputs.zip }}
+          # Only for the test's own lookups of the newest release (the plugin itself never sends a token), so they
+          # don't share GitHub's anonymous rate limit.
+          GFCFP_TEST_GITHUB_TOKEN: ${{ github.token }}
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gravityforms-civicrm-form-processor-v${{ steps.build.outputs.version }}
+          path: ${{ steps.build.outputs.zip }}
+          if-no-files-found: error
+
+  release:
+    name: Publish the GitHub release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the release, or publish it again on a re-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          zip="dist/gravityforms-civicrm-form-processor-$TAG.zip"
+          test -f "$zip"
+          # The zip the build step made, unchanged since: nothing run while testing it altered it.
+          test -n "$SHA256"
+          test "$(sha256sum "$zip" | cut -d' ' -f1)" = "$SHA256"
+          # The notes are this version's CHANGELOG.md entry.
+          awk -v head="# $TAG " 'index($0, head) == 1 { on = 1; next } on && /^# v[0-9]/ { exit } on { print }' CHANGELOG.md > notes.md
+          test -s notes.md
+          # Sites only ever look at the release GitHub marks "Latest", and GitHub gives that mark to whichever release
+          # was published last. So this release takes it only if no tag in the repository has a higher version.
+          # Otherwise two tags pushed together could finish in either order, or a fix released on an older line could
+          # take Latest from a newer one, and sites would be offered the older version. Tags rather than releases, so a
+          # newer tag whose release is still being built in another run counts too. Pre-release tags such as
+          # v1.0.0-rc1 are left out of the comparison (and fail the build, whose version must be the tag's).
+          newest=$( { echo "$TAG"; gh api "repos/$GH_REPO/git/matching-refs/tags/v" --paginate --jq '.[].ref | ltrimstr("refs/tags/")'; } \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 )
+          latest=$( [ "$newest" = "$TAG" ] && echo true || echo false )
+          echo "newest tag: $newest; marking $TAG Latest: $latest"
+          # A higher tag with no published release (a build that failed and was abandoned, or a typo such as v21.0.0)
+          # keeps every later release from becoming Latest, so no site is offered it. Say so where it will be seen.
+          if [ "$latest" = false ] && [ "$(gh release view "$newest" --json isDraft --jq .isDraft 2>/dev/null || echo missing)" != false ]; then
+            echo "::warning::$TAG is not marked Latest because tag $newest is higher, but $newest has no published release. Sites are offered neither until $newest is released or deleted."
+          fi
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            # A re-run, or a tag pushed again, which turns its release back into a draft. A published release's zip is
+            # never replaced: sites that installed it would have different code under the same version, with nothing
+            # to show it. A re-run of the same build uploads the same bytes, so that is let through.
+            published=$(gh release view "$TAG" --json isDraft --jq '.isDraft | not')
+            have=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq ".assets[] | select(.name == \"$(basename "$zip")\") | .digest" 2>/dev/null || true)
+            if [ "$published" = true ] && [ -n "$have" ] && [ "$have" != "sha256:$SHA256" ]; then
+              echo "::error::$TAG is already published with a different zip ($have). Release a new version instead."
+              exit 1
+            fi
+            gh release upload "$TAG" "$zip" --clobber
+            gh release edit "$TAG" --draft=false --latest="$latest" --title "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" "$zip" --verify-tag --latest="$latest" --title "$TAG" --notes-file notes.md
+          fi
+          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = false

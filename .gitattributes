@@ -1,0 +1,9 @@
+# Kept out of GitHub's source archives, which is what composer installs from (Packagist's dist zips are GitHub's
+# zipballs). They are development tools, and on a site they would be web-reachable inside the plugin's folder. The
+# release zip leaves them out already (bin/build.sh ships an explicit list).
+/tests          export-ignore
+/bin            export-ignore
+/images         export-ignore
+/.github        export-ignore
+/.gitignore     export-ignore
+/.gitattributes export-ignore

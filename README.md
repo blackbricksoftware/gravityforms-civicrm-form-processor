@@ -60,3 +60,33 @@ Two additional helper settings are added to the form settings.
  - **Number of times to try submitting a Webhook**: By default, Gravity Forms will only attempt to submit a Webhooks one time. This setting will allow a Webhook to be tried multiple times.
 
 ![Gravity Forms Form Settings Explanation](images/gfformsettingsfields.png)
+## Installing
+
+Requires PHP 8.2 or later, and [Gravity Forms](https://www.gravityforms.com/) with its [Webhooks](https://www.gravityforms.com/add-ons/webhooks/) add-on.
+
+Download `gravityforms-civicrm-form-processor-vX.Y.Z.zip` from the [latest release](https://github.com/blackbricksoftware/gravityforms-civicrm-form-processor/releases/latest) and upload it on **Plugins › Add New › Upload Plugin**. Use that zip, not GitHub's "Source code" archives: those have no `vendor/` folder, so the plugin can't load and does nothing.
+
+The plugin is also on Packagist as `blackbricksoftware/gravityforms-civicrm-form-processor`, for sites managed with composer.
+
+## Updates
+
+New versions are published as GitHub releases, and WordPress offers them on the Plugins page like any other plugin's update. They are never installed on their own unless you turn on auto-updates for this plugin there. WordPress checks a few times a day; **Dashboard › Updates › Check again** checks GitHub straight away. Updates install into whichever folder the plugin is in.
+
+- **Sites where a deploy owns the plugins** (composer, git) should set WordPress's own `define('DISALLOW_FILE_MODS', true);`, which removes the update notice, "Update now" and auto-updates for every plugin. Composer-managed sites update with `composer update blackbricksoftware/gravityforms-civicrm-form-processor`, git checkouts with `git pull` and `composer install --no-dev`.
+- **Multisite:** network-activate the plugin, or at least activate it on the main site. WordPress only checks for updates there.
+- **What a site must reach:** WordPress asks `api.wordpress.org` about all plugins first, and stops if that fails, before it asks about this one. Then `api.github.com` for the newest release, and `github.com` and `release-assets.githubusercontent.com` to download it. No token is used; the requests carry WordPress's usual user agent, which names the site.
+- **What it trusts:** each site installs the zip attached to the repository's latest GitHub release, over HTTPS. Anyone who can publish releases in this repository can therefore ship code to every site with auto-updates on.
+
+**Upgrading from 2.0.0 or earlier** is a manual install, once, since those versions can't update themselves: upload the new release's zip as above. The release zips for 1.0.1–2.0.0 had no folder inside them, so a site that uploaded one has the plugin in a folder named after the zip (`gravity_forms_civicrm_form_processor`, or on WordPress 7.1.4 and later that name plus random characters). The new version's folder is `gravityforms-civicrm-form-processor`, so WordPress installs it beside the old copy instead of replacing it, and the Plugins page lists the plugin twice, as version v2.0.0 and the new version. Activate the new copy first, then deactivate and delete the v2.0.0 one, so there's no moment with neither running (both active at once is harmless). Nothing is lost: the plugin's form and webhook settings are stored by Gravity Forms. Composer and git installs update as above instead.
+
+## Releasing
+
+1. Set the version in the plugin header, `Version: X.Y.Z`, with no `v` (WordPress compares it as written, and PHP sorts `v2.1.0` below `2.1.0`).
+2. Add a `# vX.Y.Z (YYYY-MM-DD)` entry at the top of `CHANGELOG.md`. It becomes the release notes.
+3. Commit, then tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`. Tag only commits that have `.github/workflows/build.yml`; a tag on a commit from before 2.1.0 runs that commit's old workflow.
+
+The [Build workflow](.github/workflows/build.yml) builds the zip, tests it in a throwaway WordPress, and publishes that same zip to the tag's GitHub release. It refuses to build if the header, the changelog and the tag disagree, and refuses to replace the zip of a release that is already published. Sites see the release once GitHub marks it Latest, which the workflow does unless a higher tag exists.
+
+Raising **Requires PHP** isn't enforced for sites that update in place: the update WordPress is offered carries no PHP requirement, so the auto-updater installs it on an older PHP. Only uploads, activation and "Update now" on the Plugins page check the new header.
+
+To build locally: `bin/build.sh` (needs PHP 8.2, composer and zip) writes `dist/gravityforms-civicrm-form-processor-vX.Y.Z.zip`. To test: `tests/run.sh` (needs PHP with pdo_sqlite, WP-CLI, curl, unzip, zip, perl and composer) builds the zip itself, replacing `dist/`, installs it in a WordPress downloaded into `.sandbox/`, and tests the updates end to end. `GFCFP_TEST_ZIP=path/to.zip tests/run.sh` tests a zip you already have.

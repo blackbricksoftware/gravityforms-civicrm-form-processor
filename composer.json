@@ -1,6 +1,8 @@
 {
     "name": "blackbricksoftware/gravityforms-civicrm-form-processor",
+    "description": "WordPress plugin that makes Gravity Forms webhooks to CiviCRM easier.",
     "type": "wordpress-plugin",
+    "license": "GPL-3.0-or-later",
     "autoload": {
         "psr-4": {
             "BlackBrickSoftware\\GravityFormsCiviCRMFormProcessor\\": "src/"
@@ -14,9 +16,14 @@
     ],
     "require": {
         "php": "^8.2",
+        "blackbricksoftware/wp-artifact-updater": "^1.5.0",
         "illuminate/support": "^8.0 || ^9.0 || ^10.0 || ^11.0 || ^12.0 || ^13.0"
     },
-    "config": { 
-        "sort-packages": true 
-    } 
+    "config": {
+        "platform": {
+            "php": "8.2.35"
+        },
+        "sort-packages": true,
+        "platform-check": false
+    }
 }

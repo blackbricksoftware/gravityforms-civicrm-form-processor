@@ -4,8 +4,48 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "2c231e3a80d614f783696a872806c3a9",
+    "content-hash": "a698b32b7c17654405365eef6807bfac",
     "packages": [
+        {
+            "name": "blackbricksoftware/wp-artifact-updater",
+            "version": "v1.5.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/blackbricksoftware/wp-artifact-updater.git",
+                "reference": "ab9284f3a0bd53e38c17213a54a940119045c28e"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/blackbricksoftware/wp-artifact-updater/zipball/ab9284f3a0bd53e38c17213a54a940119045c28e",
+                "reference": "ab9284f3a0bd53e38c17213a54a940119045c28e",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=8.0"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "BlackBrickSoftware\\WpArtifactUpdater\\": "src/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "David Hayes",
+                    "email": "david@blackbrick.software"
+                }
+            ],
+            "description": "WordPress plugin updates from the release artifact your pipeline publishes (Bitbucket Downloads or GitHub release assets), for plugins distributed outside wordpress.org.",
+            "support": {
+                "issues": "https://github.com/blackbricksoftware/wp-artifact-updater/issues",
+                "source": "https://github.com/blackbricksoftware/wp-artifact-updater/tree/v1.5.0"
+            },
+            "time": "2026-11-06T20:52:23+00:00"
+        },
         {
             "name": "carbonphp/carbon-doctrine-types",
             "version": "3.2.0",
@@ -1494,5 +1534,8 @@
         "php": "^8.2"
     },
     "platform-dev": {},
-    "plugin-api-version": "2.6.0"
+    "platform-overrides": {
+        "php": "8.2.35"
+    },
+    "plugin-api-version": "2.9.0"
 }
