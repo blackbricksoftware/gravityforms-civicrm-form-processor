@@ -65,6 +65,18 @@ if ( is_dir( WP_CONTENT_DIR . '/gfcfp-gf-stub' ) ) {
 	}
 }
 
+// Webhooks to the test's stand-in for CiviCRM (tests/capture.php, on 127.0.0.1 and its own port): WordPress's "safe"
+// requests only allow ports 80, 443 and 8080, or the site's own.
+add_filter(
+	'http_allowed_safe_ports',
+	function ( $ports, $host, $url ) {
+		$port = (int) wp_parse_url( $url, PHP_URL_PORT );
+		return '127.0.0.1' === $host && $port ? array_merge( (array) $ports, array( $port ) ) : $ports;
+	},
+	10,
+	3
+);
+
 // Page loads don't start WP-Cron, whose own update check could land in the middle of a check run.sh is counting.
 if ( ! defined( 'DISABLE_WP_CRON' ) ) {
 	define( 'DISABLE_WP_CRON', true );
@@ -99,6 +111,10 @@ add_filter(
 		}
 		if ( 'api.wordpress.org' === $host && 0 === strpos( $path, '/core/version-check/' ) ) {
 			return $answer( 200, wp_json_encode( array( 'offers' => array(), 'translations' => array() ) ) );
+		}
+		// Gravity Forms' own calls home (version and licence checks), when it is installed for the webhook checks.
+		if ( preg_match( '/(^|\.)(gravityapi|gravityforms|gravityhelp|rocketgenius)\.com$/', $host ) ) {
+			return new WP_Error( 'http_request_failed', 'sandbox: no calls to Gravity Forms\' servers' );
 		}
 		if ( ! $mode ) {
 			return $pre;

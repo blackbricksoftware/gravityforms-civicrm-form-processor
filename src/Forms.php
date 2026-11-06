@@ -4,6 +4,16 @@ namespace BlackBrickSoftware\GravityFormsCiviCRMFormProcessor;
 
 abstract class Forms
 {
+
+    /**
+     * The form settings this plugin adds (Form Settings > Additional Webhooks settings), and the form's number of
+     * attempts for its webhooks, which Gravity Forms' background processor asks for.
+     */
+    public static function register(): void
+    {
+        add_filter('gform_form_settings_fields', [self::class, 'register_webhook_settings'], 10, 2);
+        add_filter('gform_max_async_feed_attempts', [self::class, 'set_webhook_retry_attempts'], 10, 5);
+    }
     public static function register_webhook_settings(array $fields, array $form): array
     {
         $fields['civicrm_webhook_fields'] = [

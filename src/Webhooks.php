@@ -4,21 +4,39 @@ namespace BlackBrickSoftware\GravityFormsCiviCRMFormProcessor;
 
 use GFAPI;
 use GFCommon;
-use GFLogging;
 use GFNotification;
 use Exception;
 use Illuminate\Support\Arr;
 use JsonException;
-use KLogger;
 
 abstract class Webhooks
 {
+
+    /**
+     * Each webhook's CiviCRM settings, and what happens around its request: the CiviCRM API format of the data, the
+     * webhook's own timeout (instead of WordPress's 5 seconds), and, after it, the failure check and email.
+     */
+    public static function register(): void
+    {
+        add_filter('gform_gravityformswebhooks_feed_settings_fields', [self::class, 'body_fields_settings'], 10, 2);
+        add_filter('gform_webhooks_request_data', [self::class, 'maybe_undot_request_keys'], 10, 4);
+        add_filter('gform_webhooks_request_args', [self::class, 'set_request_timeout'], 10, 4);
+        add_action('gform_webhooks_post_request', [self::class, 'after_webhook_actions'], 10, 4);
+    }
     /**
     * Add a setting to specify if JSON request body fields should be structured
     * https://docs.gravityforms.com/gform_addon_feed_settings_fields/
     */
     public static function body_fields_settings($feed_settings_fields, $addon): array
     {
+        // gform_tooltip() lives in Gravity Forms' tooltips.php, which it only loads on its admin screens. These settings
+        // are also built elsewhere: GFAPI::add_feed() and update_feed() build them to know which fields to encrypt,
+        // from WP-CLI, the REST API or an import, where calling it was a fatal error. Gravity Forms loads the file the
+        // same way when it needs it.
+        if (!function_exists('gform_tooltip') && class_exists('GFCommon')) {
+            require_once GFCommon::get_base_path() . '/tooltips.php';
+        }
+
         $feed_settings_fields['civicrm_webhook_fields'] = [
             'title'  => esc_html__('CiviCRM Settings (Must use Request Format FORM)', 'gravityforms-civicrm-form-processor'),
             'fields' => [
@@ -270,7 +288,7 @@ abstract class Webhooks
 
         $request_args['timeout'] = (int) $timeout;
 
-        GFLogging::log_message('gravityformswebhooks', sprintf('CiviCRM Form Processor: webhook request timeout set to %d seconds for feed %s', (int) $timeout, rgar($feed, 'id')), KLogger::DEBUG);
+        Log::debug(sprintf('CiviCRM Form Processor: webhook request timeout set to %d seconds for feed %s', (int) $timeout, rgar($feed, 'id')));
 
         return $request_args;
     }
@@ -283,7 +301,7 @@ abstract class Webhooks
     {
 
         // Nothing?
-        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Original Request Data):' . print_r($request_data, true), KLogger::DEBUG);
+        Log::debug('CiviCRM Form Processor (Original Request Data):' . print_r($request_data, true));
         if (empty($request_data)) {
             return $request_data;
         }
@@ -299,7 +317,7 @@ abstract class Webhooks
         }
 
         // setting not enabled
-        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Enabled?):' .  rgars($feed, 'meta/CiviCRMAPIBodyFields'), KLogger::DEBUG);
+        Log::debug('CiviCRM Form Processor (Enabled?):' .  rgars($feed, 'meta/CiviCRMAPIBodyFields'));
         if (!rgars($feed, 'meta/CiviCRMAPIBodyFields')) {
             return $request_data;
         }
@@ -346,8 +364,8 @@ abstract class Webhooks
             }
         }
 
-        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (Undotted Request Data):' . print_r($undotted_request_data, true), KLogger::DEBUG);
-        GFLogging::log_message('gravityformswebhooks', 'CiviCRM Form Processor (New Request Data):' . print_r($request_data, true), KLogger::DEBUG);
+        Log::debug('CiviCRM Form Processor (Undotted Request Data):' . print_r($undotted_request_data, true));
+        Log::debug('CiviCRM Form Processor (New Request Data):' . print_r($request_data, true));
 
         return $request_data;
     }
@@ -408,10 +426,10 @@ abstract class Webhooks
     protected static function log_variables($msg, ...$vars): void
     {
 
-        GFLogging::log_message('gravityformswebhooks', $msg);
+        Log::debug($msg);
 
         foreach ($vars as $var) {
-            GFLogging::log_message('gravityformswebhooks', print_r($var, true));
+            Log::debug(print_r($var, true));
         }
     }
 
@@ -448,7 +466,7 @@ abstract class Webhooks
         Subject: $subjectRaw / $subject
         === / Email Vars Before and After Replacement ===\n\n
         EMAIL;
-        GFLogging::log_message('gravityformswebhooks', $emailInfoBefore);
+        Log::debug($emailInfoBefore);
 
         $debugInfo = static::get_notification_debug_html($response, $feed, $entry, $form, $responseData);
         $message = <<<MSG

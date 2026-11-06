@@ -6,7 +6,7 @@
  * Description: Add functionality to make Gravity Forms to CiviCRM integrations easier.
  * Author: Black Brick Software LLC
  * Author URI: https://blackbricksoftware.com
- * Version: 2.1.0
+ * Version: 2.2.0
  * Requires PHP: 8.2
  * Text Domain: gravityforms-civicrm-form-processor
  * Update URI: https://github.com/blackbricksoftware/gravityforms-civicrm-form-processor
@@ -54,35 +54,42 @@ add_action('plugins_loaded', function () {
   // forced; WordPress's DISALLOW_FILE_MODS switches them off along with every other plugin's.
   Updater::register();
 
+  // The notice after activating this copy deactivated an older copy in another folder (see the activation hook below).
+  if (is_admin()) {
+    OldCopies::register();
+  }
+
   // Everything else extends Gravity Forms and its Webhooks add-on, and does nothing without them.
   if (!class_exists('GFForms')) {
     return;
   }
 
-  // Include GravityForms classes, Not all are always available
-  add_action('init', [Loader::class, 'include_gravity_forms_classes']);
+  // The Gravity Forms classes this plugin uses directly, which aren't always loaded (on init).
+  Loader::register();
 
-  // Add additional Form Settings
-  add_filter('gform_form_settings_fields', [Forms::class, 'register_webhook_settings'], 10, 2);
+  // Form settings: delete entries after their webhooks succeed, and how many times to try a webhook.
+  Forms::register();
 
-  // Set the Retries attempts
-  add_filter('gform_max_async_feed_attempts', [Forms::class, 'set_webhook_retry_attempts'], 10, 5);
+  // Deleting an entry after its webhooks, when the form asks.
+  Entries::register();
 
-  // Maybe delete entry after feed processed
-  add_action('gform_post_process_feed', [Entries::class, 'maybe_delete_entry'], 10, 4);
+  // Help text for the settings.
+  Tooltips::register();
 
-  // More available tool tips
-  add_filter('gform_tooltips', [Tooltips::class, 'add_gfform_tooltips'], 10, 2);
+  // Each webhook's CiviCRM settings and request: the CiviCRM API format, timeout, failure check and email.
+  Webhooks::register();
 
-  // Add settings
-  add_filter('gform_gravityformswebhooks_feed_settings_fields', [Webhooks::class, 'body_fields_settings'], 10, 2);
+  // The "Webhooks" box on an entry's page: send any of the form's active webhooks again for that entry.
+  WebhookResend::register();
+});
 
-  // Modify outgoing webhook format
-  add_filter('gform_webhooks_request_data', [Webhooks::class, 'maybe_undot_request_keys'], 10, 4);
-
-  // Set a per-webhook request timeout (overrides WordPress's 5s default for this webhook only)
-  add_filter('gform_webhooks_request_args', [Webhooks::class, 'set_request_timeout'], 10, 4);
-
-  // (if enabled) Send a notification email of failed webhook or delete entry
-  add_action('gform_webhooks_post_request', [Webhooks::class, 'after_webhook_actions'], 10, 4);
+/**
+ * Activation: deactivates any older copy of this plugin active in another folder (src/OldCopies.php), so moving a site
+ * from a 2.0.0-era install is upload, activate. Registered here rather than on plugins_loaded, because it needs this
+ * file's path, and because WordPress loads this file to activate the plugin after plugins_loaded has already run.
+ */
+register_activation_hook(__FILE__, static function (mixed $networkWide = false): void {
+  if (class_exists(OldCopies::class)) {
+    OldCopies::deactivateOthers($networkWide);
+  }
 });

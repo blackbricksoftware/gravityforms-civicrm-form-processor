@@ -14,6 +14,8 @@
 # Needs php (with pdo_sqlite), wp (the WP-CLI phar), curl, unzip, zip and perl, and composer to build the zip. PHP_BIN
 # picks the php that runs WordPress and WP-CLI (default: php); CI runs it on 8.2. GFCFP_TEST_GITHUB_TOKEN, when set, is
 # used for the test's own lookups of the newest release (CI passes the workflow's token), never by the plugin.
+# GFCFP_TEST_GF_DIR, a folder holding gravityforms_*.zip and gravityformswebhooks_*.zip (a licensed copy), adds the
+# checks of sending a webhook again from an entry's page; without it they are skipped (CI has no Gravity Forms).
 #
 # NOT pipefail, deliberately: checks here are `producer | grep -q`, and under pipefail grep's early exit hands the
 # producer a SIGPIPE, so a MATCH reads as a failure. Without it a pipeline's status is its last command's, which is
@@ -110,6 +112,7 @@ if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && grep -q "^ \* Update URI: htt
 # Start from no copy of the plugin at all: a run that stopped part-way can leave one in any folder (and the Gravity
 # Forms stand-in on).
 rm -rf "$WP/wp-content/gfcfp-gf-stub"
+for d in gravityformswebhooks gravityforms; do [ -e "$PLUGINS/$d" ] && { wpq plugin deactivate "$d" > /dev/null; rm -rf "${PLUGINS:?}/$d"; }; done
 for d in "$PLUGINS"/*civicrm* "$PLUGINS"/*CiviCRM*; do
   [ -e "$d" ] || continue
   wpq plugin deactivate "$(basename "$d")" > /dev/null; rm -rf "$d"
@@ -303,16 +306,123 @@ else
   if grep -q 'Plugin installed successfully' <<< "$PAGE" && ! grep -q 'already installed' <<< "$PAGE"; then
     pass "uploading the new zip installs it as a second copy (no \"Replace current with uploaded\")"; else fail "uploading the new zip installs it as a second copy"; fi
   activate_from "$PAGE"
-  expect "  activated from the result page: both copies active, side by side" "$(copies)$(wpq plugin get "$OLDDIR" --field=status) $(wpq plugin get "$SLUG" --field=status) $(wpq plugin get "$SLUG" --field=version)" "$OLDDIR $SLUG active active $VERSION"
-  # What the admin sees, since the Plugins page doesn't show folders: the plugin listed twice, old and new versions.
+  expect "  activating it from the result page deactivates the old copy (OldCopies)" "$(copies)$(wpq plugin get "$OLDDIR" --field=status) $(wpq plugin get "$SLUG" --field=status) $(wpq plugin get "$SLUG" --field=version)" "$OLDDIR $SLUG inactive active $VERSION"
+  # What the admin sees, since the Plugins page doesn't show folders: the plugin listed twice, and a notice naming the
+  # old copy's folder and version, with WordPress's own delete link for it.
   PAGE=$(curl -s -b "$JAR" "$BASE/wp-admin/plugins.php")
-  if [ "$(grep -o 'data-plugin="[^"]*gravityforms-civicrm-form-processor.php"' <<< "$PAGE" | sort -u | wc -l)" = 2 ] && grep -q 'Version v2.0.0' <<< "$PAGE" && grep -q "Version $VERSION" <<< "$PAGE"; then
-    pass "  the Plugins page lists it twice, as version v2.0.0 and version $VERSION"; else fail "  the Plugins page lists it twice, as version v2.0.0 and version $VERSION"; fi
-  expect "  and the site works with both active" "$(pages_ok)" "ok"
+  if [ "$(grep -o 'data-plugin="[^"]*gravityforms-civicrm-form-processor.php"' <<< "$PAGE" | sort -u | wc -l)" = 2 ] && grep -q "replaces the older one in wp-content/plugins/$OLDDIR/ (version v2.0.0)" <<< "$PAGE" \
+    && grep -qE "action=delete-selected(&amp;|&#038;)checked%5B0?%5D=$OLDDIR%2Fgravityforms-civicrm-form-processor\.php" <<< "$PAGE"; then
+    pass "  the Plugins page says so, with a link to delete the old copy"; else fail "  the Plugins page says so, with a link to delete the old copy"; grep -o 'notice notice-info.\{0,400\}' <<< "$PAGE" | head -2; fi
+  expect "  and the site works" "$(pages_ok)" "ok"
   expect "  the new copy's code is what runs (its updater, its folder)" "$(mock release eval 'echo defined( "GRAVITYFORMS_CIVICRM_FORM_PROCESSOR" ) ? basename( dirname( GRAVITYFORMS_CIVICRM_FORM_PROCESSOR ) ) : "undefined"; echo " "; gfcfp_test_check();')" "$SLUG ASKED=1 OFFERED=9.9.9 CURRENT=none"
-  wpq plugin deactivate "$OLDDIR" > /dev/null; wpq plugin delete "$OLDDIR" > /dev/null
-  expect "deactivating and deleting the old copy leaves the new one, active, and the site working" "$(copies)$(wpq plugin get "$SLUG" --field=status) $(pages_ok)" "$SLUG active ok"
+  # The link, followed: WordPress's confirmation screen, then its delete.
+  LINK=$(grep -o 'href="[^"]*action=delete-selected[^"]*"' <<< "$PAGE" | head -1 | sed 's/^href="//; s/"$//; s/&amp;/\&/g; s/&#038;/\&/g')
+  CONFIRM=$(curl -s -b "$JAR" "$LINK")
+  NONCE=$(grep -o 'name="_wpnonce" value="[^"]*"' <<< "$CONFIRM" | head -1 | sed 's/.*value="//; s/"//')
+  curl -s -b "$JAR" -o /dev/null --data-urlencode "action=delete-selected" --data-urlencode "verify-delete=1" --data-urlencode "checked[]=$OLDDIR/gravityforms-civicrm-form-processor.php" \
+    --data-urlencode "_wpnonce=$NONCE" --data-urlencode "plugin_status=all" "$BASE/wp-admin/plugins.php"
+  PAGE=$(curl -s -b "$JAR" "$BASE/wp-admin/plugins.php")
+  if [ "$(copies)" = "$SLUG " ] && [ "$(wpq plugin get "$SLUG" --field=status)" = active ] && ! grep -q 'replaces the older one' <<< "$PAGE" && [ "$(wpq option get gravityforms_civicrm_form_processor_replaced 2>&1 | grep -c Error)" = 1 ]; then
+    pass "deleting the old copy from the notice's link leaves the new one active, and the notice goes"; else fail "deleting the old copy from the notice's link ($(copies))"; fi
+  expect "  and the site works" "$(pages_ok)" "ok"
   rm -rf "$WP/wp-content/gfcfp-gf-stub"
+fi
+
+echo; echo "-- sending a webhook again from an entry's page (with Gravity Forms and its Webhooks add-on)"
+# Gravity Forms isn't free, so this runs only when GFCFP_TEST_GF_DIR names a folder holding gravityforms_*.zip and
+# gravityformswebhooks_*.zip (a licensed copy; CI has none). The webhooks go to tests/capture.php, a stand-in for
+# CiviCRM's REST endpoint on its own port, which answers as CiviCRM does unless told otherwise.
+GFZIP=$(ls "${GFCFP_TEST_GF_DIR:-/nonexistent}"/gravityforms_[0-9]*.zip 2>/dev/null | sort -V | tail -1)
+WHZIP=$(ls "${GFCFP_TEST_GF_DIR:-/nonexistent}"/gravityformswebhooks_[0-9]*.zip 2>/dev/null | sort -V | tail -1)
+if [ -z "$GFZIP" ] || [ -z "$WHZIP" ]; then
+  echo "SKIP sending a webhook again (set GFCFP_TEST_GF_DIR to a folder with gravityforms_*.zip and gravityformswebhooks_*.zip)"
+else
+  CAP="$SB/capture"; CAPPORT="${GFCFP_TEST_CAPTURE_PORT:-8091}"
+  mkdir -p "$CAP" && rm -f "${CAP:?}/answer.json" "${CAP:?}/captured.jsonl" && cp "$T/capture.php" "$CAP/"
+  (cd "$CAP" && CAPTURE_DIR="$CAP" exec "$PHP" -S "127.0.0.1:$CAPPORT" capture.php > "$SB/capture-server.log" 2>&1) &
+  CAPPID=$!
+  trap 'kill $WPPID $CAPPID 2>/dev/null || true' EXIT
+  wpq plugin install "$GFZIP" --force --activate > /dev/null; wpq plugin install "$WHZIP" --force --activate > /dev/null
+  echo "     ($(basename "$GFZIP" .zip), $(basename "$WHZIP" .zip))"
+  # A form with two webhooks to the stand-in, one turned off; a second form with its own; and an entry, saved without
+  # running any feeds (GFAPI::add_entry), as if the webhook had failed or been off when it came in.
+  IDS=$(wpq eval '
+    $url = "http://127.0.0.1:'"$CAPPORT"'/civicrm/ajax/rest";
+    $meta = function ( $name ) use ( $url ) { return array( "feedName" => $name, "requestURL" => $url, "requestMethod" => "POST", "requestFormat" => "json", "requestHeaders" => array(), "requestBodyType" => "all_fields", "feed_condition_conditional_logic" => false ); };
+    $form = GFAPI::add_form( array( "title" => "CiviCRM test " . wp_generate_password( 6, false ), "fields" => array( array( "type" => "text", "id" => 1, "label" => "First name" ), array( "type" => "email", "id" => 2, "label" => "Email" ) ) ) );
+    $on = GFAPI::add_feed( $form, $meta( "To CiviCRM" ), "gravityformswebhooks" );
+    $off = GFAPI::add_feed( $form, $meta( "Turned off" ), "gravityformswebhooks" ); GFAPI::update_feed_property( $off, "is_active", 0 );
+    $other_form = GFAPI::add_form( array( "title" => "Other form " . wp_generate_password( 6, false ), "fields" => array( array( "type" => "text", "id" => 1, "label" => "Name" ) ) ) );
+    $other = GFAPI::add_feed( $other_form, $meta( "Other form webhook" ), "gravityformswebhooks" );
+    $entry = GFAPI::add_entry( array( "form_id" => $form, "1" => "Ada", "2" => "ada@example.com" ) );
+    echo "$form $on $off $other $entry";' | tail -1)
+  read -r FORM FEED OFFFEED OTHERFEED ENTRY <<< "$IDS"
+  # Gravity Forms loads its KLogger class only once something asks for a logger. This plugin's hooks can run first (a
+  # webhook sent by another plugin, say), and until 2.2.0 their KLogger::DEBUG was then a fatal error.
+  expect "this plugin logs fine before Gravity Forms has loaded its logger" \
+    "$(wpq eval 'echo class_exists( "KLogger", false ) ? "loaded" : "not loaded", " "; \BlackBrickSoftware\GravityFormsCiviCRMFormProcessor\Log::debug( "probe" ); echo "logged";' | tail -1)" "not loaded logged"
+  # Until 2.2.0 this was a fatal error: GFAPI::add_feed() builds the webhook settings, which called gform_tooltip().
+  if [[ "$IDS" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then pass "webhooks can be created outside wp-admin (GFAPI::add_feed from WP-CLI)"; else fail "webhooks can be created outside wp-admin ($IDS)"; fi
+  ENTRYPAGE="$BASE/wp-admin/admin.php?page=gf_entries&view=entry&id=$FORM&lid=$ENTRY"
+  PAGE=$(curl -s -b "$JAR" "$ENTRYPAGE")
+  if grep -q 'id="gravityforms_civicrm_form_processor_webhooks"' <<< "$PAGE" && grep -q "<option value=\"$FEED\">To CiviCRM (not sent yet)</option>" <<< "$PAGE" && ! grep -q "<option value=\"$OFFFEED\"" <<< "$PAGE"; then
+    pass "the entry's page has a Webhooks box listing the form's active webhook, not the one turned off"; else fail "the entry's page has a Webhooks box listing the form's active webhook ($IDS)"; fi
+  NONCE=$(grep -o "data.append('nonce', \"[^\"]*\")" <<< "$PAGE" | head -1 | sed "s/.*, \"//; s/\")//")
+  # The box's request, as its Send button makes it.
+  resend() { curl -s -b "${4:-$JAR}" --data-urlencode "action=gravityforms_civicrm_form_processor_resend_webhook" --data-urlencode "nonce=${3:-$NONCE}" \
+    --data-urlencode "entry_id=$1" --data-urlencode "feed_id=$2" "$BASE/wp-admin/admin-ajax.php"; }
+  json() { "$PHP" -r '$j = json_decode( stream_get_contents( STDIN ), true ); echo is_array( $j ) ? ( $j["success"] ? "ok" : "error" ) . ": " . ( $j["data"]["message"] ?? "" ) : "not json: " . substr( (string) $j, 0, 80 );'; }
+  feed_status() { wpq eval '$s = gform_get_meta( '"$1"', "feed_'"$2"'_status" ); $l = is_array( $s ) ? end( $s ) : null; echo is_array( $l ) ? $l["status"] : "none", " ", in_array( '"$2"', GFAPI::get_processed_feeds_meta( '"$1"', "gravityformswebhooks" ) ) ? "processed" : "unprocessed";'; }
+  notes() { wpq eval 'foreach ( GFAPI::get_notes( array( "entry_id" => '"$1"' ) ) as $n ) { echo $n->value, "\n"; }'; }
+  sent() { wc -l < "$CAP/captured.jsonl" 2>/dev/null | tr -d ' ' || echo 0; }
+
+  OUT=$(resend "$ENTRY" "$FEED" | json)
+  expect "Send: the webhook goes out now, and the box says so" "$OUT" 'ok: "To CiviCRM" was sent.'
+  if [ "$(sent)" = 1 ] && grep -q '"uri":"\\/civicrm\\/ajax\\/rest"' "$CAP/captured.jsonl" && grep -q 'ada@example.com' "$CAP/captured.jsonl"; then
+    pass "  the stand-in CiviCRM got one request with the entry's data"; else fail "  the stand-in CiviCRM got one request with the entry's data"; head -3 "$CAP/captured.jsonl" 2>/dev/null; fi
+  expect "  the entry's feed status says it succeeded, and Gravity Forms counts it as processed" "$(feed_status "$ENTRY" "$FEED")" "success processed"
+  if notes "$ENTRY" | grep -q 'Webhook "To CiviCRM" sent again by admin.' && notes "$ENTRY" | grep -q 'Webhook sent. Response code: 200.'; then
+    pass "  and the entry's notes say who sent it (and the Webhooks add-on's own note, with the response code)"; else fail "  the entry's notes"; notes "$ENTRY"; fi
+  if curl -s -b "$JAR" "$ENTRYPAGE" | grep -q "<option value=\"$FEED\">To CiviCRM (sent "; then pass "  and the box now shows when it was sent"; else fail "  and the box now shows when it was sent"; fi
+
+  echo '{"code":500,"body":"Internal Server Error"}' > "$CAP/answer.json"
+  expect "CiviCRM answers 500: the box says it failed, and why" "$(resend "$ENTRY" "$FEED" | json)" 'error: "To CiviCRM" failed: the server answered with HTTP 500.'
+  expect "  the feed status says failed" "$(feed_status "$ENTRY" "$FEED" | cut -d' ' -f1)" "failed"
+  if notes "$ENTRY" | grep -q 'Webhook "To CiviCRM" sent again by admin, and it failed: the server answered with HTTP 500.'; then pass "  and the entry's notes say so"; else fail "  and the entry's notes say so"; fi
+  echo '{"code":200,"body":"{\"is_error\":1,\"error_message\":\"Mandatory key(s) missing: contact_type\"}"}' > "$CAP/answer.json"
+  expect "CiviCRM reports an API error: the box gives CiviCRM's message" "$(resend "$ENTRY" "$FEED" | json)" 'error: "To CiviCRM" failed: CiviCRM reported an error: Mandatory key(s) missing: contact_type'
+  echo '{"code":200,"body":"<html>not json</html>"}' > "$CAP/answer.json"
+  expect "CiviCRM's answer isn't JSON: the box says so" "$(resend "$ENTRY" "$FEED" | json)" "error: \"To CiviCRM\" failed: the answer was not JSON, so CiviCRM did not handle it (check the webhook's URL and request format)."
+  rm -f "${CAP:?}/answer.json"
+
+  : > "$CAP/captured.jsonl"
+  expect "a webhook that is turned off: refused, nothing sent" "$(resend "$ENTRY" "$OFFFEED" | json) $(sent)" "error: That webhook is turned off. Turn it on in the form's Webhooks settings first. 0"
+  expect "another form's webhook: refused, nothing sent" "$(resend "$ENTRY" "$OTHERFEED" | json) $(sent)" "error: That webhook does not belong to this entry's form. 0"
+  expect "a bad nonce: refused by WordPress, nothing sent" "$(resend "$ENTRY" "$FEED" bad-nonce) $(sent)" "-1 0"
+  # A logged-in user who can't edit entries (an editor), with a valid nonce for their own session: refused by the
+  # capability check, which a bad nonce never reaches. The nonce is made for that session's token, from its cookie.
+  wpq user create gfcfp_editor2 editor2@example.com --role=editor --user_pass=editor2-pass > /dev/null
+  EJAR="$SB/editor-jar.txt"
+  curl -s -c "$EJAR" -b "wordpress_test_cookie=WP%20Cookie%20check" -o /dev/null -d "log=gfcfp_editor2&pwd=editor2-pass&wp-submit=Log+In&testcookie=1" "$BASE/wp-login.php"
+  LIC=$(awk '$6 ~ /^wordpress_logged_in_/ { print $7; exit }' "$EJAR")
+  ENONCE=$(LIC="$LIC" wpq eval '$_COOKIE[ LOGGED_IN_COOKIE ] = rawurldecode( getenv( "LIC" ) ); wp_set_current_user( get_user_by( "login", "gfcfp_editor2" )->ID ); echo wp_create_nonce( "gravityforms_civicrm_form_processor_resend_webhook" );' | tail -1)
+  expect "a user who can't edit entries (an editor, with a valid nonce): refused, nothing sent" "$(resend "$ENTRY" "$FEED" "$ENONCE" "$EJAR" | json) $(sent)" "error: You are not allowed to send webhooks for entries. 0"
+  wpq user delete gfcfp_editor2 --yes > /dev/null
+
+  # The form's "Delete entries after Webhooks are completed successfully" setting applies to a resend too.
+  ENTRY2=$(wpq eval '$f = GFAPI::get_form( '"$FORM"' ); $f["CiviCRMDeleteEntries"] = true; GFAPI::update_form( $f ); echo GFAPI::add_entry( array( "form_id" => '"$FORM"', "1" => "Grace", "2" => "grace@example.com" ) );' | tail -1)
+  OUT=$(resend "$ENTRY2" "$FEED" | json)
+  if [ "${OUT#ok: }" != "$OUT" ] && grep -q 'has now been deleted' <<< "$OUT" && [ "$(wpq eval 'echo is_wp_error( GFAPI::get_entry( '"$ENTRY2"' ) ) ? "gone" : "kept";')" = gone ]; then
+    pass "with \"Delete entries after Webhooks\" on: sent, the entry deleted, and the box says so"; else fail "with \"Delete entries after Webhooks\" on ($OUT)"; fi
+
+  wpq plugin deactivate gravityformswebhooks > /dev/null
+  code=$(curl -s -b "$JAR" -o "$SB/page.html" -w "%{http_code}" "$ENTRYPAGE")
+  if [ "$code" = 200 ] && ! grep -q 'gravityforms_civicrm_form_processor_webhooks' "$SB/page.html" && ! grep -q 'critical error' "$SB/page.html"; then
+    pass "without the Webhooks add-on: no box, and the entry's page still works"; else fail "without the Webhooks add-on ($code)"; fi
+  wpq plugin deactivate gravityforms > /dev/null
+  rm -rf "${PLUGINS:?}/gravityforms" "${PLUGINS:?}/gravityformswebhooks"
+  kill "$CAPPID" 2>/dev/null || true
+  trap 'kill $WPPID 2>/dev/null || true' EXIT
 fi
 
 echo; echo "-- the newest real GitHub release"

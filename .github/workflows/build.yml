@@ -114,17 +114,21 @@ jobs:
           if [ "$latest" = false ] && [ "$(gh release view "$newest" --json isDraft --jq .isDraft 2>/dev/null || echo missing)" != false ]; then
             echo "::warning::$TAG is not marked Latest because tag $newest is higher, but $newest has no published release. Sites are offered neither until $newest is released or deleted."
           fi
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            # A re-run, or a tag pushed again, which turns its release back into a draft. A published release's zip is
-            # never replaced: sites that installed it would have different code under the same version, with nothing
-            # to show it. A re-run of the same build uploads the same bytes, so that is let through.
-            published=$(gh release view "$TAG" --json isDraft --jq '.isDraft | not')
-            have=$(gh api "repos/$GH_REPO/releases/tags/$TAG" --jq ".assets[] | select(.name == \"$(basename "$zip")\") | .digest" 2>/dev/null || true)
-            if [ "$published" = true ] && [ -n "$have" ] && [ "$have" != "sha256:$SHA256" ]; then
-              echo "::error::$TAG is already published with a different zip ($have). Release a new version instead."
+          # What GitHub already has for this tag, drafts included: a tag pushed again turns its release back into a
+          # draft, and /releases/tags/{tag} doesn't list drafts. An API error stops the job (pipefail), since taking
+          # it for "nothing there" could replace a zip sites have installed.
+          name=$(basename "$zip")
+          release=$(gh api "repos/$GH_REPO/releases" --paginate --jq ".[] | select(.tag_name == \"$TAG\") | {draft, digest: ([.assets[] | select(.name == \"$name\") | .digest] | first)}")
+          if [ -n "$release" ]; then
+            # A version's zip is never replaced, published or draft: sites that installed it would have different
+            # code under the same version, with nothing to show it. The same bytes again (this run's own zip, on a
+            # re-run of the release job) are fine, and a release with no zip yet gets this one.
+            have=$(jq -r '.digest // empty' <<< "$release" | head -1)
+            if [ -n "$have" ] && [ "$have" != "sha256:$SHA256" ]; then
+              echo "::error::$TAG already has a different $name ($have). Release a new version instead. (Only if no site can have installed it, delete the release first.)"
               exit 1
             fi
-            gh release upload "$TAG" "$zip" --clobber
+            [ -n "$have" ] || gh release upload "$TAG" "$zip"
             gh release edit "$TAG" --draft=false --latest="$latest" --title "$TAG" --notes-file notes.md
           else
             gh release create "$TAG" "$zip" --verify-tag --latest="$latest" --title "$TAG" --notes-file notes.md

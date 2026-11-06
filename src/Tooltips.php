@@ -4,6 +4,12 @@ namespace BlackBrickSoftware\GravityFormsCiviCRMFormProcessor;
 
 abstract class Tooltips
 {
+
+    /** The help text for this plugin's settings. */
+    public static function register(): void
+    {
+        add_filter('gform_tooltips', [self::class, 'add_gfform_tooltips'], 10, 2);
+    }
     /**
      * Add additional tooltips
      */
