@@ -119,6 +119,18 @@ add_filter(
 	3
 );
 
+// Code on the site that throws while an entry is updated: bin/recover-entries.php must keep nothing of an entry it
+// was putting back then. Only for an entry whose first field is "Throws on update".
+add_filter(
+	'gform_entry_pre_update',
+	function ( $entry ) {
+		if ( 'Throws on update' === ( $entry['1'] ?? '' ) ) {
+			throw new RuntimeException( 'gfcfp sandbox: throws on update' );
+		}
+		return $entry;
+	}
+);
+
 // Page loads don't start WP-Cron, whose own update check could land in the middle of a check run.sh is counting.
 if ( ! defined( 'DISABLE_WP_CRON' ) ) {
 	define( 'DISABLE_WP_CRON', true );

@@ -586,37 +586,83 @@ else
   rm -f "${CAP:?}/answer.json" "$WP/wp-content/gfcfp-debug-off"
   wpq eval 'global $wpdb; $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE \"wp_gf_webhooks_feed_processor%\"" );' > /dev/null
 
-  # bin/recover-entries.php puts back entries that were deleted, from the copy in the webhook failure email, under their
-  # own ids. An entry with a paragraph over several lines, a name with its parts and characters HTML escapes; its
-  # failure email (as the sandbox kept it), saved as the email's HTML and as text copied from it; then the entry deleted.
-  RECOVER="$SB/working"; mkdir -p "$RECOVER" && rm -f "${RECOVER:?}/email.html" "${RECOVER:?}/copied.txt"
+  # bin/recover-entries.php puts back entries that were deleted, from the copies of them in the webhook failure emails,
+  # under their own ids. Eight entries, their failure emails (CiviCRM's proxy answering with an HTML 403 page, as the one
+  # that deleted real entries did), copies made from those by tests/recovery-copies.php, then the entries deleted.
+  # Entry 1 has what a copy can get wrong: a paragraph with a line that is just ")", "<3", "&", a tab and a browser's
+  # "\r\n" line breaks; a non-breaking space in a name and in a List field; quotes. Its copies are the email's HTML and
+  # text copied from it. Entry 2's copy is cut off, with entry 3's email after it in the same file; entry 4's is its
+  # "$entry" part alone, indented; entry 5 makes the site's own code throw when it is saved (tests/sandbox.php); entry 6
+  # has two copies that disagree. Entries 7 and 8 have "$entry" parts that lost their line breaks, as some mail apps
+  # show the email ("Array ( [id] => 1681 ..."): entry 7's has a paragraph and double spaces, which come back as one line
+  # and single spaces; entry 8's is cut off.
+  RECOVER="$SB/working"; rm -rf "${RECOVER:?}"; mkdir -p "$RECOVER"
   REC=$(wpq eval '
     $form = GFAPI::add_form( array( "title" => "Recovery test " . wp_generate_password( 6, false ), "fields" => array(
       array( "type" => "text", "id" => 1, "label" => "First name" ), array( "type" => "email", "id" => 2, "label" => "Email" ),
       array( "type" => "textarea", "id" => 3, "label" => "Message" ),
-      array( "type" => "name", "id" => 4, "label" => "Name", "inputs" => array( array( "id" => "4.3", "label" => "First" ), array( "id" => "4.6", "label" => "Last" ) ) ) ) ) );
+      array( "type" => "name", "id" => 4, "label" => "Name", "inputs" => array( array( "id" => "4.3", "label" => "First" ), array( "id" => "4.6", "label" => "Last" ) ) ),
+      array( "type" => "list", "id" => 5, "label" => "Children", "enableColumns" => true, "choices" => array( array( "text" => "Name", "value" => "Name" ), array( "text" => "Age", "value" => "Age" ) ) ) ) ) );
     $source = GFAPI::get_feed( '"$FEED"' );
     $feed = GFAPI::add_feed( $form, $source["meta"], "gravityformswebhooks" );
-    $entry = GFAPI::add_entry( array( "form_id" => $form, "1" => "Tom & Jerry <b>", "2" => "recover@example.com", "3" => "Line one\nLine two, with \"quotes\" & <tags>\n  and an indented third", "4.3" => "Ada", "4.6" => "O'\''Lovelace", "ip" => "203.0.113.7", "source_url" => "https://example.org/contact/" ) );
-    echo "$form $feed $entry";' | tail -1)
-  read -r RFORM RFEED RENTRY <<< "$REC"
-  snapshot() { wpq eval '$e = GFAPI::get_entry( '"$RENTRY"' ); if ( is_wp_error( $e ) ) { echo "missing"; exit; } foreach ( array( "date_updated", "is_read" ) as $k ) { unset( $e[ $k ] ); } ksort( $e ); echo md5( wp_json_encode( $e ) );'; }
-  BEFORE=$(snapshot)
-  echo '{"code":500,"body":"Internal Server Error"}' > "$CAP/answer.json"; : > "$MAIL"
-  resend "$RENTRY" "$RFEED" > /dev/null; rm -f "${CAP:?}/answer.json"
-  "$PHP" -r '$m = json_decode( file_get_contents( $argv[1] ), true ); file_put_contents( $argv[2], $m["message"] ); file_put_contents( $argv[3], html_entity_decode( strip_tags( $m["message"] ), ENT_QUOTES | ENT_HTML5, "UTF-8" ) );' "$MAIL" "$RECOVER/email.html" "$RECOVER/copied.txt"
-  wpq eval 'GFAPI::delete_entry( '"$RENTRY"' );' > /dev/null
-  recover() { wp --path="$WP" eval-file "$ROOT/bin/recover-entries.php" "$RECOVER" "$@" 2>&1 | grep -v -i deprecat; }
+    $add = function ( $values ) use ( $form ) { return GFAPI::add_entry( array( "form_id" => $form, "ip" => "203.0.113.7", "source_url" => "https://example.org/contact/?a=1&b=2" ) + $values ); };
+    $ids = array(
+      $add( array( "1" => "Zoë\u{00A0}Müller <b>", "2" => "r1@example.com", "3" => "Line one\r\nWe <3 the work, \"quoted\" & <tags> &amp; AT&T\r\n)\r\n\tafter a tab\r\n  and an indented line", "4.3" => "Ada", "4.6" => "O'\''Lovelace", "5" => serialize( array( array( "Name" => "Ana\u{00A0}Maria", "Age" => "7" ), array( "Name" => "Ben", "Age" => "9" ) ) ) ) ),
+      $add( array( "1" => "Clipped", "2" => "r2@example.com", "3" => "Cut off here" ) ),
+      $add( array( "1" => "After", "2" => "r3@example.com", "3" => "Two\r\nlines" ) ),
+      $add( array( "1" => "Alone", "2" => "r4@example.com", "3" => "Para one\r\nPara two\r\n\r\nSigned" ) ),
+      $add( array( "1" => "Throws on update", "2" => "r5@example.com" ) ),
+      $add( array( "1" => "Twice", "2" => "r6@example.com" ) ),
+      $add( array( "1" => "Seven  spaced", "2" => "r7@example.com", "3" => "Flat one\r\nFlat  two" ) ),
+      $add( array( "1" => "Eight", "2" => "r8@example.com", "3" => "Flat cut" ) ),
+    );
+    echo "$form $feed ", implode( " ", $ids );' | tail -1)
+  read -r RFORM RFEED R1 R2 R3 R4 R5 R6 R7 R8 <<< "$REC"
+  # An entry as Gravity Forms gives it, but for what saving it again changes: a fingerprint of it, or "missing".
+  # With "flat", as a copy without line breaks has it: each run of spaces and line breaks in a value one space.
+  snap() { wpq eval '$e = GFAPI::get_entry( '"$1"' ); if ( is_wp_error( $e ) ) { echo "missing"; exit; } foreach ( array( "date_updated", "is_read" ) as $k ) { unset( $e[ $k ] ); } if ( "flat" === "'"${2:-}"'" ) { $e = array_map( function ( $v ) { return is_string( $v ) ? trim( preg_replace( "/[ \t\r\n]+/", " ", $v ) ) : $v; }, $e ); } ksort( $e ); echo md5( serialize( $e ) );'; }
+  BEFORE="$(snap "$R1") $(snap "$R3") $(snap "$R4") $(snap "$R7" flat)"
+  echo '{"code":403,"body":"<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>"}' > "$CAP/answer.json"; : > "$MAIL"
+  for r in "$R1" "$R2" "$R3" "$R4" "$R5" "$R6" "$R7" "$R8"; do resend "$r" "$RFEED" > /dev/null; done
+  rm -f "${CAP:?}/answer.json"
+  "$PHP" "$T/recovery-copies.php" "$MAIL" "$RECOVER" "$R1" "$R2" "$R3" "$R4" "$R5" "$R6" "$R7" "$R8" || fail "the copies for recover-entries.php could not be made"
+  wpq eval 'foreach ( array( '"$R1, $R2, $R3, $R4, $R5, $R6, $R7, $R8"' ) as $id ) { GFAPI::delete_entry( $id ); }' > /dev/null
+  recover() { wp --path="$WP" ${RUSER:+--user="$RUSER"} eval-file "${GFCFP_TEST_RECOVER_SCRIPT:-$ROOT/bin/recover-entries.php}" "$RECOVER" "$@" 2>&1 | grep -v -i deprecat; }
+  # How many of its lines say <what> about entry <id>.
+  said() { grep -c "^  $1 *#$2 " <<< "$OUT" || true; }
+
   OUT=$(recover)
-  if grep -q "^  would    #$RENTRY (form $RFORM, " <<< "$OUT" && [ "$(snapshot)" = missing ]; then
-    pass "recover-entries.php, a dry run: finds the deleted entry in the email (HTML and copied text), changes nothing"; else fail "recover-entries.php, a dry run"; echo "$OUT" | head -5; fi
-  OUT=$(recover apply)
-  if grep -q "^  restored #$RENTRY (form $RFORM, " <<< "$OUT" && [ "$(snapshot)" = "$BEFORE" ] && notes "$RENTRY" | grep -q 'Put back on .* from the copy in the webhook failure email'; then
-    pass "  apply: the entry is back under its own id #$RENTRY, every field and detail as it was, with a note saying so"; else fail "  apply: the entry is back under its own id, as it was"; echo "$OUT" | head -5; echo "     before $BEFORE, after $(snapshot)"; fi
-  if grep -q -E 'Tom|Jerry|recover@example|Lovelace|Line one|203\.0\.113' <<< "$(recover; recover apply; recover apply 1-2)"; then
+  if [ "$(said would "$R1")$(said FAILED "$R2")$(said would "$R3")$(said would "$R4")$(said would "$R5")$(said FAILED "$R6")$(said would "$R7")$(said FAILED "$R8")" = 11111111 ] && [ "$(snap "$R1")" = missing ] \
+    && grep -q "^  would    #$R1 (form $RFORM, [0-9-]* [0-9:]*, 6 field values, from copied.txt, email.html)$" <<< "$OUT" \
+    && grep -q "^  FAILED   #$R2 (form ?, from r2-cut-r3.txt): it is cut off" <<< "$OUT" && grep -q "^  FAILED   #$R6 .*: its copies differ (r6-a.txt, r6-b.txt)" <<< "$OUT" \
+    && grep -A1 "^  would    #$R7 " <<< "$OUT" | grep -q "^           paragraph fields (3): the copy has no line breaks, so they come back as one line$" \
+    && grep -q "^  FAILED   #$R8 (form ?, from r8-flat-cut.txt): it is cut off" <<< "$OUT"; then
+    pass "recover-entries.php, a dry run: each copy checked, nothing changed (a cut-off copy and copies that disagree are refused)"; else fail "recover-entries.php, a dry run"; echo "$OUT" | sed 's/^/     /'; fi
+  ALL="$OUT"
+  OUT=$(RUSER=admin recover apply); ALL="$ALL$OUT"
+  if [ "$(said restored "$R1")$(said restored "$R3")$(said restored "$R4")$(said restored "$R7")" = 1111 ] && [ "$(snap "$R1") $(snap "$R3") $(snap "$R4") $(snap "$R7")" = "$BEFORE" ] \
+    && notes "$R1" | grep -q 'Put back on .* from the copy in the webhook failure email (email.html)'; then
+    pass "  apply (as an admin, with --user): each entry back under its own id, every field and detail as it was (who created it too; from a copy without line breaks, its values with single spaces), with a note"
+  else fail "  apply: each entry back under its own id, as it was"; echo "$OUT" | sed 's/^/     /'; echo "     before $BEFORE, after $(snap "$R1") $(snap "$R3") $(snap "$R4") $(snap "$R7")"; fi
+  if grep -q "^  FAILED   #$R5 .*: Gravity Forms refused it (RuntimeException thrown); nothing of it was kept$" <<< "$OUT" && [ "$(snap "$R5")$(snap "$R2")$(snap "$R6")$(snap "$R8")" = missingmissingmissingmissing ]; then
+    pass "  site code that throws while an entry is saved: nothing of that entry is kept, and the refused ones aren't put back"; else fail "  site code that throws while an entry is saved"; echo "$OUT" | sed 's/^/     /'; fi
+  OUT=$(recover apply); ALL="$ALL$OUT"
+  expect "  run again: the entries put back are left alone, and the one that failed is tried again" "$(said exists "$R1")$(said exists "$R3")$(said exists "$R4")$(said exists "$R7")$(said FAILED "$R5")" "11111"
+  OUT=$(recover "$R1-$((R8 + 2))"); ALL="$ALL$OUT"
+  if grep -q "^  missing  #$((R8 + 1))-$((R8 + 2)): no copy in the folder, and not on the site$" <<< "$OUT" && grep -q "; missing 2\.$" <<< "$OUT"; then
+    pass "  with an id range: the ids in it that have no copy and aren't on the site are listed"; else fail "  with an id range: missing ids listed"; echo "$OUT" | sed 's/^/     /'; fi
+  OUT=$(recover apply 1-2); ALL="$ALL$OUT"
+  expect "  an id range that leaves them out: skipped" "$(said skipped "$R1")$(said skipped "$R4")" "11"
+  OUT=$(recover apply 1681..1710); ALL="$ALL$OUT"
+  if grep -q 'Error: Not understood: "1681..1710"' <<< "$OUT" && ! grep -q '#' <<< "$OUT"; then pass "  a mistyped range: refused, nothing done"; else fail "  a mistyped range: refused"; echo "$OUT" | sed 's/^/     /'; fi
+  # A folder that isn't there, and one with the copies in a folder inside it: each says what it found.
+  mkdir -p "$SB/recover-nested/working"; cp "$RECOVER/r5.txt" "$SB/recover-nested/working/"
+  OUT=$(cd "$SB" && for f in no-such-folder recover-nested; do wp --path="$WP" eval-file "${GFCFP_TEST_RECOVER_SCRIPT:-$ROOT/bin/recover-entries.php}" "$f"; done 2>&1 | grep -v -i deprecat)
+  rm -rf "${SB:?}/recover-nested"
+  if grep -q "^Error: There is no folder no-such-folder in $(cd "$SB" && pwd -P)\. Use: " <<< "$OUT" && grep -q "^Error: No files in $(cd "$SB" && pwd -P)/recover-nested, only working/\. The copies go in it directly" <<< "$OUT"; then
+    pass "  a folder that isn't there, or holds only a folder: says so, and where it looked"; else fail "  a folder that isn't there, or holds only a folder: says so"; echo "$OUT" | sed 's/^/     /'; fi
+  if grep -q -E 'Zoë|Müller|Lovelace|Line one|r[1-8]@example|203\.0\.113|Ana.Maria|AT&T|Para one|Signed|Clipped|Seven|Flat' <<< "$ALL"; then
     fail "  its output names nothing that was submitted"; else pass "  its output names nothing that was submitted (only ids, forms, dates, counts)"; fi
-  expect "  run again: the entry is there, so it is left alone" "$(recover apply | grep -c "^  exists   #$RENTRY ")" "1"
-  expect "  an id range that leaves it out: skipped" "$(recover apply 1-2 | grep -c "^  skipped  #$RENTRY ")" "1"
 
   wpq plugin deactivate gravityformswebhooks > /dev/null
   code=$(curl -s -b "$JAR" -o "$SB/page.html" -w "%{http_code}" "$ENTRYPAGE")
