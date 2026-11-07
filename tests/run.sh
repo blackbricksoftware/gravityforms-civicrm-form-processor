@@ -376,6 +376,16 @@ else
   CAPPID=$!
   trap 'kill $WPPID $CAPPID 2>/dev/null || true' EXIT
   echo "     (Gravity Forms $(wpq plugin get gravityforms --field=version) and Webhooks $(wpq plugin get gravityformswebhooks --field=version), $GF_FROM)"
+  # A real browser, for the checks that click buttons, so the pages' own scripts are tested: headless Chrome or
+  # Chromium (GFCFP_TEST_CHROME, or the first one found), driven by tests/browser.mjs with Node.
+  CHROME=""
+  for c in "${GFCFP_TEST_CHROME:-}" google-chrome google-chrome-stable chromium chromium-browser; do
+    [ -n "$c" ] && command -v "$c" > /dev/null && command -v node > /dev/null && { CHROME=$(command -v "$c"); break; }
+  done
+  browser() { GFCFP_TEST_CHROME="$CHROME" GFCFP_BROWSER_PROFILE="$SB/chrome-profile" node "$T/browser.mjs" "$@" 2>&1; }
+  if [ -n "$CHROME" ]; then echo "     (clicking through pages in $("$CHROME" --version 2>/dev/null | head -1))"
+  elif [ "${GFCFP_TEST_GF_REQUIRED:-}" = 1 ]; then fail "a browser is required here (GFCFP_TEST_GF_REQUIRED=1): no Chrome or Chromium, or no Node, found (GFCFP_TEST_CHROME)"
+  else echo "SKIP the checks that click through pages in a browser (no Chrome or Chromium, or no Node, found; set GFCFP_TEST_CHROME)"; fi
   # The Webhooks add-on's background processor starts empty and unpaused: a run that stopped part-way can leave its
   # batches, or its pause after a failed task, in the database (wp_gf_webhooks_feed_processor_*).
   wpq eval 'global $wpdb; $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE \"wp_gf_webhooks_feed_processor%\"" );' > /dev/null
@@ -413,7 +423,7 @@ else
   # "ok: <each webhook's result, joined by | >", or "error: ..." when any failed.
   json() { "$PHP" -r '$j = json_decode( stream_get_contents( STDIN ), true ); if ( ! is_array( $j ) ) { echo "not json: ", substr( (string) $j, 0, 80 ); exit; } $r = $j["data"]["results"] ?? null; echo $j["success"] ? "ok" : "error", ": ", is_array( $r ) ? implode( " | ", array_column( $r, "message" ) ) : ( $j["data"]["message"] ?? "" );'; }
   feed_status() { wpq eval '$s = gform_get_meta( '"$1"', "feed_'"$2"'_status" ); $l = is_array( $s ) ? end( $s ) : null; echo is_array( $l ) ? $l["status"] : "none", " ", in_array( '"$2"', GFAPI::get_processed_feeds_meta( '"$1"', "gravityformswebhooks" ) ) ? "processed" : "unprocessed";'; }
-  notes() { wpq eval 'foreach ( GFAPI::get_notes( array( "entry_id" => '"$1"' ) ) as $n ) { echo $n->value, "\n"; }'; }
+  notes() { wpq eval 'foreach ( GFAPI::get_notes( array( "entry_id" => '"$1"' ) ) ?: array() as $n ) { echo $n->value, "\n"; }'; }
   sent() { wc -l < "$CAP/captured.jsonl" 2>/dev/null | tr -d ' ' || echo 0; }
 
   OUT=$(resend "$ENTRY" "$FEED" | json)
@@ -426,6 +436,29 @@ else
   if curl -s -b "$JAR" "$ENTRYPAGE" | grep -q "data-status=\"$FEED\">(sent "; then pass "  and the box now shows when it was sent"; else fail "  and the box now shows when it was sent"; fi
   if grep -qx "$FORM $ENTRY" "$WP/wp-content/gfcfp-probe.log" 2>/dev/null; then
     pass "  Gravity Forms' pre-feed form filter ran for it, as for a webhook sent in the background"; else fail "  Gravity Forms' pre-feed form filter ran for it (gform_form_pre_process_async_task)"; fi
+  # The box in a real browser, as a person uses it: tick two webhooks, press Send. In 2.2.0 and 2.3.0 Send did nothing:
+  # the box's script found itself by an id that the frame Gravity Forms puts around each box also has, so it took the
+  # frame's first button (its "move up" arrow) for Send.
+  if [ -n "$CHROME" ]; then
+    BEFORE_SENT=$(sent)
+    OUT=$(browser "$ENTRYPAGE" "$JAR" '(async () => {
+      const BOX = "gravityforms_civicrm_form_processor_webhooks";
+      const ids = [...document.querySelectorAll(`[id^="${BOX}"]`)].map((e) => e.id);
+      const dups = [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))];
+      const box = document.getElementById(BOX);
+      for (const id of ['"$FEED"', '"$ALSOFEED"']) { document.getElementById(`${BOX}_${id}`).click(); }
+      const button = [...box.querySelectorAll("button")].find((b) => b.textContent.trim() === "Send");
+      if (!button) { return "no Send button"; }
+      button.click();
+      const status = box.querySelector("[role=status]");
+      for (let i = 0; i < 300 && status.querySelectorAll("p").length < 2; i++) { await new Promise((r) => setTimeout(r, 100)); }
+      const label = box.querySelector(`[data-status="'"$ALSOFEED"'"]`).textContent.replace(/^\(sent .*\)$/, "(sent ...)");
+      return [dups.length ? `duplicate ids: ${dups.join(" ")}` : "ids unique", status.className, [...status.querySelectorAll("p")].map((p) => p.textContent).join(" / ") || "(no result shown)", label].join(" | ");
+    })()')
+    if grep -qxF 'RESULT 1: ids unique | notice inline notice-success | "To CiviCRM" was sent. / "Also to CiviCRM" was sent. | (sent ...)' <<< "$OUT" && [ "$(sent)" = $((BEFORE_SENT + 2)) ]; then
+      pass "in a browser: tick two webhooks and press Send: both go out, and the box shows each result and the new status"
+    else fail "in a browser: tick two webhooks and press Send ($(($(sent) - BEFORE_SENT)) sent)"; echo "$OUT" | sed 's/^/     /'; fi
+  fi
 
   # From here the webhook's failure email is on ("CiviCRM Webhook Failure Notification"). The sandbox keeps each email
   # in wp-content/gfcfp-mail.jsonl instead of sending it.
@@ -492,10 +525,24 @@ else
   LIST=$(curl -s -b "$JAR" "$LISTURL")
   if grep -q '<option value="gravityforms_civicrm_form_processor_resend_webhooks">Send webhooks again</option>' <<< "$LIST" && grep -q 'window.confirm' <<< "$LIST"; then
     pass "the Entries list has a \"Send webhooks again\" bulk action, which asks first"; else fail "the Entries list has a \"Send webhooks again\" bulk action"; fi
-  LNONCE=$(grep -o 'name="gforms_entry_list" value="[^"]*"' <<< "$LIST" | head -1 | sed 's/.*value="//; s/"//')
   : > "$CAP/captured.jsonl"
-  OUT=$(curl -s -b "$JAR" --data-urlencode "gforms_entry_list=$LNONCE" --data-urlencode "action=gravityforms_civicrm_form_processor_resend_webhooks" --data-urlencode "action2=-1" \
-    --data-urlencode "entry[]=$BULK1" --data-urlencode "entry[]=$BULK2" --data-urlencode "all_entries=" "$LISTURL")
+  if [ -n "$CHROME" ]; then
+    # In a real browser, as a person does it: tick the two entries, choose the action, press Apply. First answered
+    # Cancel at the question it asks: nothing happens.
+    PICK='(() => { for (const id of ['"$BULK1"', '"$BULK2"']) { document.getElementById(`cb-select-${id}`).click(); }
+      document.getElementById("bulk-action-selector-top").value = "gravityforms_civicrm_form_processor_resend_webhooks";
+      document.getElementById("doaction").click(); return "applied"; })()'
+    NOTICE='(document.querySelector("#message") || { textContent: "no notice" }).textContent.trim()'
+    OUT=$(GFCFP_BROWSER_DIALOG=dismiss browser "$LISTURL" "$JAR" "$PICK" "$NOTICE")
+    sleep 1
+    if grep -q "^DIALOG: Send the selected entries' webhooks again?" <<< "$OUT" && grep -qx 'RESULT 2: no notice' <<< "$OUT" && [ "$(sent)" = 0 ] && ! notes "$BULK1" | grep -q 'queued'; then
+      pass "  in a browser: Apply asks first, and Cancel sends nothing"; else fail "  in a browser: Apply asks first, and Cancel sends nothing"; echo "$OUT" | sed 's/^/     /'; fi
+    OUT=$(browser "$LISTURL" "$JAR" "$PICK" "$NOTICE")
+  else
+    LNONCE=$(grep -o 'name="gforms_entry_list" value="[^"]*"' <<< "$LIST" | head -1 | sed 's/.*value="//; s/"//')
+    OUT=$(curl -s -b "$JAR" --data-urlencode "gforms_entry_list=$LNONCE" --data-urlencode "action=gravityforms_civicrm_form_processor_resend_webhooks" --data-urlencode "action2=-1" \
+      --data-urlencode "entry[]=$BULK1" --data-urlencode "entry[]=$BULK2" --data-urlencode "all_entries=" "$LISTURL")
+  fi
   if grep -q 'The webhooks of 2 entries are queued to be sent again' <<< "$OUT"; then pass "  applied to two entries: the list says they are queued"; else fail "  applied to two entries: the list says they are queued"; fi
   for _ in $(seq 60); do [ "$(sent)" -ge 4 ] && break; sleep 0.5; done
   if [ "$(sent)" -lt 4 ]; then

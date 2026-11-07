@@ -43,8 +43,14 @@ abstract class WebhookResend
     /** The admin-ajax action, and the nonce's action. */
     public const ACTION = 'gravityforms_civicrm_form_processor_resend_webhook';
 
-    /** The box's id on the entry page. */
+    /**
+     * The box's id on the entry page. Gravity Forms gives it to the frame it puts around the box (the title bar with its
+     * arrows, and the box's content), so what is inside the box uses ids of its own: BOX_SEND, and BOX . '_<feed id>'.
+     */
     public const BOX = 'gravityforms_civicrm_form_processor_webhooks';
+
+    /** The id of the box's content: its checkboxes, Send button and results. */
+    public const BOX_SEND = 'gravityforms_civicrm_form_processor_webhooks_send';
 
     /** The Entries list's bulk action. */
     public const BULK_ACTION = 'gravityforms_civicrm_form_processor_resend_webhooks';
@@ -90,7 +96,7 @@ abstract class WebhookResend
         $addon = GF_Webhooks::get_instance();
         $id = esc_attr(self::BOX);
         ?>
-        <div id="<?php echo $id; ?>">
+        <div id="<?php echo esc_attr(self::BOX_SEND); ?>">
             <p class="description"><?php esc_html_e('Send webhooks again for this entry, now. The results are shown here and added to the entry\'s notes.', 'gravityforms-civicrm-form-processor'); ?></p>
             <?php foreach ($feeds as $feed) : ?>
                 <?php
@@ -114,7 +120,7 @@ abstract class WebhookResend
         </div>
         <script>
         (function () {
-            var box = document.getElementById(<?php echo wp_json_encode(self::BOX); ?>);
+            var box = document.getElementById(<?php echo wp_json_encode(self::BOX_SEND); ?>);
             var button = box.querySelector('button'), spinner = box.querySelector('.spinner'), result = box.querySelector('[role="status"]');
             function show(ok, lines) {
                 result.className = 'notice inline ' + (ok ? 'notice-success' : 'notice-error');
