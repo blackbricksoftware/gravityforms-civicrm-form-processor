@@ -140,6 +140,14 @@ fake_old() { perl -pi -e 's/^ \* Version: .*$/ * Version: 0.0.1/' "$PLUGINS/$1/$
 seed() { mock release eval 'set_site_transient( gfcfp_test_cache_key(), array( "version" => "0.0.2", "url" => "https://github.com/'"$REPO"'/releases/download/v0.0.2/'"$SLUG"'-v0.0.2.zip" ), 3600 ); $s = get_site_transient( "update_plugins" ); if ( is_object( $s ) ) { $s->last_checked = 0; set_site_transient( "update_plugins", $s ); }' > /dev/null; }
 cached() { wpq eval '$c = get_site_transient( gfcfp_test_cache_key() ); echo is_array( $c ) ? $c["version"] : "none";'; }
 
+echo; echo "-- secrets masked in what the plugin prints about a webhook (tests/redact.php)"
+# src/Redact.php as the zip ships it, with WordPress's own WP_Error. Up to 2.3.1 the failure email and the log printed
+# a webhook's settings whole, its CiviCRM API key and site key with them.
+OUT=$(wpq eval-file "$T/redact.php")
+echo "$OUT"
+FAILS=$((FAILS + $(grep -c '^FAIL ' <<< "$OUT" || true)))
+grep -q '^PASS ' <<< "$OUT" || fail "tests/redact.php ran (it printed no results)"
+
 # 3. The site over real HTTP, with the stand-ins on. Stopped on any exit.
 GFCFP_HTTP_MOCK=release GFCFP_HTTP_MOCK_ZIP="$ZIP" GFCFP_HTTP_LOG="$HTTPLOG" \
   "$PHP" -d memory_limit=256M -d upload_max_filesize=64M -d post_max_size=64M -S "127.0.0.1:$WPPORT" -t "$WP" > "$SB/wp-server.log" 2>&1 &
@@ -464,6 +472,18 @@ else
   # in wp-content/gfcfp-mail.jsonl instead of sending it.
   MAIL="$WP/wp-content/gfcfp-mail.jsonl"
   wpq eval '$f = GFAPI::get_feed( '"$FEED"' ); $m = $f["meta"]; $m["CiviCRMWebhookFailureNotification"] = "1"; $m["CiviCRMWebhookFailureNotificationTo"] = "alerts@example.com"; $m["CiviCRMWebhookFailureNotificationFrom"] = "wordpress@example.com"; $m["CiviCRMWebhookFailureNotificationFromName"] = "Sandbox"; $m["CiviCRMWebhookFailureNotificationSubject"] = "CiviCRM webhook failed"; GFAPI::update_feed( '"$FEED"', $m );' > /dev/null
+  # And it carries credentials, as a webhook to CiviCRM does (made up, each starting "gfcfp-test-"): the API key in
+  # "Authorization: Bearer" and in a body field, the site key in X-Civi-Key, and both in the URL. Gravity Forms' log is
+  # on for the Webhooks add-on. Up to 2.3.1 the failure email and the log printed them in clear text.
+  APIKEY=gfcfp-test-api-key-0123456789-WXYZ; SITEKEY=gfcfp-test-site-key-0123456789
+  GFLOG=$(wpq eval '$f = GFAPI::get_feed( '"$FEED"' ); $m = $f["meta"]; $m["requestURL"] .= "?api_key='"$APIKEY"'&key='"$SITEKEY"'";
+    $row = function ( $name, $value ) { return array( "key" => "gf_custom", "custom_key" => $name, "value" => "gf_custom", "custom_value" => $value ); };
+    $m["requestHeaders"] = array( $row( "Authorization", "Bearer '"$APIKEY"'" ), $row( "X-Civi-Key", "'"$SITEKEY"'" ), $row( "X-Requested-With", "XMLHttpRequest" ) );
+    $m["fieldValues"] = array( $row( "json.api_key", "'"$APIKEY"'" ) );
+    GFAPI::update_feed( '"$FEED"', $m );
+    update_option( "gform_enable_logging", 1 ); GFLogging::include_logger();
+    GFLogging::get_instance()->update_plugin_settings( array( "gravityformswebhooks" => array( "enable" => 1, "log_level" => KLogger::DEBUG, "file_name" => "gfcfp-test" ) ) );
+    $file = GFLogging::get_instance()->get_log_file_name( "gravityformswebhooks" ); @unlink( $file ); echo $file;' | tail -1)
   : > "$MAIL"
   # The newest email: "<to> | <subject> | <the reason this plugin gives>".
   last_mail() { tail -1 "$MAIL" 2>/dev/null | "$PHP" -r '$m = json_decode( stream_get_contents( STDIN ), true ); if ( ! is_array( $m ) ) { echo "none"; exit; } preg_match( "/<p>(Network Error|Invalid HTTP Status Code|Response Was Not JSON|CiviCRM API Returned an Error)[^<]*<\/p>/", $m["message"], $r ); echo ( is_array( $m["to"] ) ? implode( ",", $m["to"] ) : $m["to"] ), " | ", $m["subject"], " | ", $r[1] ?? "?";'; }
@@ -474,6 +494,26 @@ else
   expect "  the feed status says failed" "$(feed_status "$ENTRY" "$FEED" | cut -d' ' -f1)" "failed"
   if notes "$ENTRY" | grep -q 'Webhook "To CiviCRM" sent again by admin, and it failed: The server answered with HTTP 500.'; then pass "  and the entry's notes say so"; else fail "  and the entry's notes say so"; fi
   expect "  and the failure email goes out, as for any failed webhook" "$(mails) $(last_mail)" "1 alerts@example.com | CiviCRM webhook failed | Invalid HTTP Status Code"
+  # The email as its reader sees it (htmlspecialchars() undone): the webhook's settings and the answer masked, the
+  # entry whole.
+  MSG=$(tail -1 "$MAIL" | "$PHP" -r 'echo html_entity_decode( json_decode( stream_get_contents( STDIN ), true )["message"] ?? "", ENT_QUOTES );')
+  if [ -n "$MSG" ] && ! grep -q 'gfcfp-test-' <<< "$MSG" && grep -qF '[custom_key] => X-Civi-Key' <<< "$MSG" && grep -qF '[custom_value] => Bearer ****WXYZ' <<< "$MSG" \
+    && grep -qE '\[custom_value\] => \*{4}$' <<< "$MSG" && grep -qF 'rest?api_key=****WXYZ&key=****' <<< "$MSG" && grep -qF '[code] => 500' <<< "$MSG" && grep -qF '[2] => ada@example.com' <<< "$MSG"; then
+    pass "  and it holds none of the webhook's keys: names kept, the API key its last 4 characters, the site key none; the entry whole"
+  else fail "  and it holds none of the webhook's keys, but keeps their names and the entry"; grep -o '.\{0,40\}gfcfp-test-.\{0,12\}' <<< "$MSG" | head -5 | sed 's/^/     /'; fi
+  LOGTEXT=$(cat "$GFLOG" 2>/dev/null || true)
+  if grep -qF 'GF_Webhooks::process_feed(): Sending webhook request to ' <<< "$LOGTEXT" && grep -qF '[X-Civi-Key] => ****' <<< "$LOGTEXT" \
+    && grep -qF 'Post Webhook Failed' <<< "$LOGTEXT" && grep -qF '[custom_key] => X-Civi-Key' <<< "$LOGTEXT" && ! grep -q 'gfcfp-test-' <<< "$LOGTEXT"; then
+    pass "  and Gravity Forms' log holds none of them: the Webhooks add-on's line for the request, and this plugin's"
+  else fail "  and Gravity Forms' log holds none of the keys (${GFLOG:-no log file})"; grep -o '.\{0,40\}gfcfp-test-.\{0,12\}' <<< "$LOGTEXT" | head -5 | sed 's/^/     /'; fi
+  # Gravity Forms saves the failure's data with the entry's feed status (entry meta), which Entries logs. Up to 2.3.1
+  # that held WordPress's whole answer, and in it the URL as sent.
+  STATUSMETA=$(wpq eval 'echo serialize( gform_get_meta( '"$ENTRY"', "feed_'"$FEED"'_status" ) );')
+  if grep -qF 'api_key=****WXYZ&key=****' <<< "$STATUSMETA" && ! grep -q 'gfcfp-test-' <<< "$STATUSMETA"; then
+    pass "  and the entry's feed status, saved with the failure's data, holds none of them"
+  else fail "  and the entry's feed status, saved with the failure's data, holds none of the keys"; grep -o '.\{0,40\}gfcfp-test-.\{0,12\}' <<< "$STATUSMETA" | head -5 | sed 's/^/     /'; fi
+  wpq eval 'update_option( "gform_enable_logging", 0 );' > /dev/null
+  if [ -n "$GFLOG" ]; then rm -f "$GFLOG"; fi
   echo '{"code":200,"body":"{\"is_error\":1,\"error_message\":\"Mandatory key(s) missing: contact_type\"}"}' > "$CAP/answer.json"
   expect "CiviCRM reports an API error: the box gives CiviCRM's message" "$(resend "$ENTRY" "$FEED" | json)" 'error: "To CiviCRM" failed: CiviCRM reported an error: Mandatory key(s) missing: contact_type'
   expect "  and the failure email says so" "$(mails) $(last_mail)" "2 alerts@example.com | CiviCRM webhook failed | CiviCRM API Returned an Error"

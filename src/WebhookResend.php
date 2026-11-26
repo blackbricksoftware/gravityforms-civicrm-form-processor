@@ -417,17 +417,18 @@ abstract class WebhookResend
 
     /**
      * What went wrong, in a sentence. CiviCRM's answer is checked in Webhooks::check_civicrm_response(), whose WP_Error
-     * says what was wrong with it; any other WP_Error means the request got no answer.
+     * says what was wrong with it; any other WP_Error means the request got no answer. It goes into the box, the
+     * entry's notes and the log, so any key it quotes is masked (Redact::text()).
      */
     private static function describeFailure(Exception|WP_Error $error): string
     {
         if ($error instanceof Exception) {
-            return $error->getMessage();
+            return Redact::text($error->getMessage());
         }
         if (str_starts_with((string) $error->get_error_code(), Webhooks::FAILURE)) {
-            return $error->get_error_message();
+            return Redact::text($error->get_error_message());
         }
-        return sprintf(__('The request did not get an answer (%s).', 'gravityforms-civicrm-form-processor'), $error->get_error_message());
+        return sprintf(__('The request did not get an answer (%s).', 'gravityforms-civicrm-form-processor'), Redact::text($error->get_error_message()));
     }
 
     /** @return array{ok: false, message: string} */

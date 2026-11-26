@@ -31,6 +31,7 @@ abstract class Webhooks
         add_filter('gform_webhooks_request_args', [self::class, 'mark_request'], 20, 4);
         add_filter('http_response', [self::class, 'check_civicrm_response'], 10, 3);
         add_action('gform_webhooks_post_request', [self::class, 'after_webhook_actions'], 10, 4);
+        add_filter('gform_logging_message', [self::class, 'redact_log_message'], 10, 1);
     }
     /**
     * Add a setting to specify if JSON request body fields should be structured
@@ -310,7 +311,7 @@ abstract class Webhooks
     {
 
         // Nothing?
-        Log::debug('CiviCRM Form Processor (Original Request Data):' . print_r($request_data, true));
+        Log::debug('CiviCRM Form Processor (Original Request Data):' . print_r(Redact::data($request_data), true));
         if (empty($request_data)) {
             return $request_data;
         }
@@ -373,8 +374,8 @@ abstract class Webhooks
             }
         }
 
-        Log::debug('CiviCRM Form Processor (Undotted Request Data):' . print_r($undotted_request_data, true));
-        Log::debug('CiviCRM Form Processor (New Request Data):' . print_r($request_data, true));
+        Log::debug('CiviCRM Form Processor (Undotted Request Data):' . print_r(Redact::data($undotted_request_data), true));
+        Log::debug('CiviCRM Form Processor (New Request Data):' . print_r(Redact::data($request_data), true));
 
         return $request_data;
     }
@@ -436,17 +437,22 @@ abstract class Webhooks
         }
         if (!empty($data['is_error']) || array_key_exists('error_code', $data)) {
             $civi = $data['error_message'] ?? $data['error_code'] ?? '';
-            return self::failure('api_error', sprintf(__('CiviCRM reported an error: %s', 'gravityforms-civicrm-form-processor'), is_scalar($civi) ? (string) $civi : wp_json_encode($civi)),
+            // CiviCRM's message goes into the entry's notes and the log: masked, in case it quotes a key.
+            return self::failure('api_error', sprintf(__('CiviCRM reported an error: %s', 'gravityforms-civicrm-form-processor'), Redact::text(is_scalar($civi) ? (string) $civi : (string) wp_json_encode($civi))),
                 'Post Webhook Failed: $responseData[is_error] || array_key_exists(error_code, $responseData)',
                 'CiviCRM API Returned an Error: The CiviCRM API returned an error message. Verify all required field are submitted and contain valid data.', $response, $data);
         }
         return null;
     }
 
-    /** A failed answer, as check_civicrm_response() returns it. */
+    /**
+     * A failed answer, as check_civicrm_response() returns it. Its data holds masked copies of the answer (Redact), as
+     * the email does: Gravity Forms saves it with the entry's feed status (entry meta feed_<id>_status, which Entries
+     * logs), and WordPress's own object for the answer holds the URL as sent, with any key in its query string.
+     */
     private static function failure(string $kind, string $message, string $header, string $email, array $response, mixed $data = null): WP_Error
     {
-        return new WP_Error(self::FAILURE . $kind, $message, ['response' => $response, 'response_data' => $data, 'header' => $header, 'email' => $email]);
+        return new WP_Error(self::FAILURE . $kind, $message, ['response' => Redact::response($response), 'response_data' => Redact::data($data), 'header' => $header, 'email' => $email]);
     }
 
     /**
@@ -460,14 +466,15 @@ abstract class Webhooks
             return;
         }
         $data = $response->get_error_data();
+        // The log gets the same masked copies as the email (Redact): the webhook's URL, headers and body hold its keys.
         if (str_starts_with((string) $response->get_error_code(), self::FAILURE) && is_array($data)) {
-            static::log_variables($data['header'], $data['response'], $feed, $entry, $form, $data['response_data']);
+            static::log_variables($data['header'], Redact::response($data['response']), Redact::feed($feed), $entry, $form, Redact::data($data['response_data']));
             static::send_failed_webhook_email($data['header'], $data['email'], $data['response'], $feed, $entry, $form, $data['response_data']);
             return;
         }
         // No answer at all: DNS, a refused connection, a timeout.
         $msg = 'Post Webhook Failed: is_wp_error( $response )';
-        static::log_variables($msg, $response, $feed, $entry, $form);
+        static::log_variables($msg, Redact::response($response), Redact::feed($feed), $entry, $form);
         static::send_failed_webhook_email($msg, 'Network Error: Sending data to CiviCRM failed with a possible network error.', $response, $feed, $entry, $form);
     }
 
@@ -530,11 +537,17 @@ abstract class Webhooks
         ]);
     }
 
+    /**
+     * The failure email's copies of the webhook and its answer. The webhook's settings and CiviCRM's answer are masked
+     * (Redact): its URL, headers and body fields hold the CiviCRM API key and site key, which until 2.3.2 went out in
+     * clear text in every failure email. The entry and the form are copied whole, as before (bin/recover-entries.php
+     * reads the entry from it).
+     */
     protected static function get_notification_debug_html($response, $feed, $entry, $form, $responseData = null): string
     {
 
-        $responseDump = static::dump_and_encode($response);
-        $feedDump = static::dump_and_encode($feed);
+        $responseDump = static::dump_and_encode(Redact::response($response));
+        $feedDump = static::dump_and_encode(Redact::feed($feed));
         $entryDump = static::dump_and_encode($entry);
         $formDump = static::dump_and_encode($form);
 
@@ -560,7 +573,7 @@ abstract class Webhooks
         DEBUG;
 
         if ($responseData !== null) {
-            $responseDataDump = static::dump_and_encode($responseData);
+            $responseDataDump = static::dump_and_encode(Redact::data($responseData));
             $responseInfo = <<<DEBUG
             === Response Data ===
             <p><strong>\$responseData</strong></p>
@@ -578,5 +591,16 @@ abstract class Webhooks
     protected static function dump_and_encode($rawText): string
     {
         return htmlspecialchars(print_r($rawText, true));
+    }
+
+    /**
+     * Gravity Forms' gform_logging_message filter. The Webhooks add-on logs each request it sends whole, its URL,
+     * headers and body ("GF_Webhooks::process_feed(): Sending webhook request to ..."), so with logging on, its log held
+     * every webhook's API key and site key. Its lines from sending a webhook (that one, the answer's body, the error)
+     * are masked as this plugin's own are (Redact::text()). Other lines are left alone.
+     */
+    public static function redact_log_message(mixed $message): mixed
+    {
+        return is_string($message) && str_contains($message, 'GF_Webhooks::process_feed(): ') ? Redact::text($message) : $message;
     }
 }

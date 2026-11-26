@@ -68,7 +68,9 @@ abstract class Entries
             // Query the field statuses
             $metaKey = "feed_{$feedId}_status";
             $feedStatuses = gform_get_meta($entryId, $metaKey);
-            Log::debug("CiviCRM Form Processor Entry Deletion Feed Status: " . print_r($feedStatuses, true));
+            // Masked (Redact): a failed status holds the failure's data, a copy of CiviCRM's answer, and before 2.3.2
+            // WordPress's object for it, with the URL as sent and any key in its query string.
+            Log::debug("CiviCRM Form Processor Entry Deletion Feed Status: " . print_r(Redact::data($feedStatuses), true));
             if (empty($feedStatuses) || !is_array($feedStatuses)) {
                 $success = false;
                 break;
